@@ -1,3 +1,5 @@
+> Updated via InfraBott edit endpoint.
+
 <div align="center">
 
 # InfraBott
