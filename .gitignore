@@ -696,3 +696,4 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/terraform,visualstudiocode,macos,windows,venv,pycharm+all,webstorm+all,node,nextjs,flask,python
+@CLAUDE.md
