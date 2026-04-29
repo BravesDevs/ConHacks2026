@@ -701,3 +701,6 @@ $RECYCLE.BIN/
 *ARCHITECTURE.md
 
 __MACOSX/
+.codex
+.vite
+INTEGRATION.md
