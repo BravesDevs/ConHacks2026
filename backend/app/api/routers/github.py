@@ -550,6 +550,12 @@ async def update_repo_file(
             and "already exists" in create_ref_res.text.lower()
         ):
             raise HTTPException(status_code=409, detail="branch_already_exists")
+        if create_ref_res.status_code == 401:
+            raise HTTPException(status_code=401, detail="github_unauthorized")
+        if create_ref_res.status_code == 403:
+            raise HTTPException(
+                status_code=403, detail="github_forbidden_no_write_permission"
+            )
         if create_ref_res.status_code != 201:
             raise HTTPException(status_code=502, detail="github_branch_create_failed")
 
@@ -581,6 +587,12 @@ async def update_repo_file(
             headers=headers,
             json=commit_payload,
         )
+        if commit_res.status_code == 401:
+            raise HTTPException(status_code=401, detail="github_unauthorized")
+        if commit_res.status_code == 403:
+            raise HTTPException(
+                status_code=403, detail="github_forbidden_no_write_permission"
+            )
         if commit_res.status_code == 409:
             raise HTTPException(status_code=409, detail="file_sha_conflict")
         if commit_res.status_code == 422:
