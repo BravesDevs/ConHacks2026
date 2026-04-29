@@ -61,6 +61,43 @@ def ingest_terraform_config_json(
     )
 
 
+def ingest_terraform_sample_file(
+    settings: Settings, *, content: str, filename: str = "sample.tf"
+) -> dict[str, Any]:
+    names = SnowflakeNames.from_settings(settings)
+    pipe = f'"{names.database}"."{names.schema_terraform}"."RAW_PIPE"'
+    payload = {"filename": filename, "content": content, "type": "terraform_hcl"}
+    return upload_json_to_stage_and_ingest(
+        settings,
+        data=payload,
+        stage_prefix="terraform_config",
+        pipe_fqn=pipe,
+        filename=f"{filename}.json",
+    )
+
+
+def ingest_terraform_resolved_resources(
+    settings: Settings,
+    *,
+    resources: Sequence[Mapping[str, Any]],
+    filename: str = "resolved_resources.json",
+) -> dict[str, Any]:
+    names = SnowflakeNames.from_settings(settings)
+    pipe = f'"{names.database}"."{names.schema_terraform}"."RAW_PIPE"'
+    payload = {
+        "filename": filename,
+        "type": "terraform_resolved",
+        "resources": resources,
+    }
+    return upload_json_to_stage_and_ingest(
+        settings,
+        data=payload,
+        stage_prefix="terraform_config",
+        pipe_fqn=pipe,
+        filename=filename,
+    )
+
+
 async def ingest_digitalocean_sizes(
     settings: Settings, *, filename: str | None = None
 ) -> dict[str, Any]:

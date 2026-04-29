@@ -6,12 +6,17 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api.deps import require_internal_job_token
 from app.services.digitalocean_monitoring_service import fetch_digitalocean_metrics
-from app.services.ingest_service import ingest_metrics_json
+from app.services.ingest_service import (
+    ingest_metrics_json,
+    ingest_terraform_resolved_resources,
+    ingest_terraform_sample_file,
+)
 from app.services.snowflake_service import SnowflakeNames, refresh_pipe, run_sql
 from app.services.snowflake_workflows import (
     ensure_cleaning_procs_and_tasks,
     ensure_cortex_procs_and_tasks,
     ensure_suggestion_procs_and_tasks,
+    ensure_terraform_cleaning,
 )
 
 
@@ -82,11 +87,83 @@ def ingest_refresh_pipe(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.get("/pipes/status")
+def pipe_status(
+    pipe: str = Query(
+        ...,
+        description=(
+            "Which pipe to inspect: metrics|resources|terraform|do_sizes. "
+            "Returns SYSTEM$PIPE_STATUS plus recent COPY_HISTORY rows for the target raw table."
+        ),
+    ),
+    hours: int = Query(
+        default=1, ge=1, le=168, description="How many hours of COPY_HISTORY to return."
+    ),
+    limit: int = Query(
+        default=25, ge=1, le=200, description="Max COPY_HISTORY rows to return."
+    ),
+    settings=Depends(require_internal_job_token),
+) -> dict[str, Any]:
+    try:
+        names = SnowflakeNames.from_settings(settings)
+        pipe_map = {
+            "metrics": {
+                "pipe_fqn": f"{names.database}.{names.schema_metrics}.RAW_PIPE",
+                "raw_table": f"{names.database}.{names.schema_metrics}.RAW",
+            },
+            "resources": {
+                "pipe_fqn": f"{names.database}.{names.schema_resources}.RAW_PIPE",
+                "raw_table": f"{names.database}.{names.schema_resources}.RAW",
+            },
+            "terraform": {
+                "pipe_fqn": f"{names.database}.{names.schema_terraform}.RAW_PIPE",
+                "raw_table": f"{names.database}.{names.schema_terraform}.RAW",
+            },
+            "do_sizes": {
+                "pipe_fqn": f"{names.database}.{names.schema_cost}.SIZES_RAW_PIPE",
+                "raw_table": f"{names.database}.{names.schema_cost}.SIZES_RAW",
+            },
+        }
+        if pipe not in pipe_map:
+            raise ValueError("pipe must be one of metrics|resources|terraform|do_sizes")
+
+        pipe_fqn = pipe_map[pipe]["pipe_fqn"]
+        raw_table = pipe_map[pipe]["raw_table"]
+
+        status_rows = run_sql(
+            settings, sql=f"SELECT SYSTEM$PIPE_STATUS('{pipe_fqn}') AS PIPE_STATUS;"
+        )
+        copy_history_rows = run_sql(
+            settings,
+            sql=f"""
+            SELECT *
+            FROM TABLE(
+              INFORMATION_SCHEMA.COPY_HISTORY(
+                table_name => '{raw_table}',
+                start_time => DATEADD('hour', -{hours}, CURRENT_TIMESTAMP())
+              )
+            )
+            ORDER BY LAST_LOAD_TIME DESC
+            LIMIT {limit};
+            """,
+        )
+        return {
+            "pipe": pipe,
+            "pipe_fqn": pipe_fqn,
+            "raw_table": raw_table,
+            "pipe_status": (status_rows[0]["PIPE_STATUS"] if status_rows else None),
+            "copy_history": copy_history_rows,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.post("/workflows/setup")
 def setup_workflows(settings=Depends(require_internal_job_token)) -> dict[str, str]:
     """Create placeholder stored procedures + Snowflake TASKs for cleaning, analysis, and Cortex steps."""
     try:
         ensure_cleaning_procs_and_tasks(settings)
+        ensure_terraform_cleaning(settings)
         ensure_suggestion_procs_and_tasks(settings)
         ensure_cortex_procs_and_tasks(settings)
         return {"status": "ok"}
@@ -144,6 +221,83 @@ def run_cortex_now(settings=Depends(require_internal_job_token)) -> dict[str, An
         out = run_sql(
             settings,
             sql=f'CALL "{names.database}"."{names.schema_terraform}"."SP_CORTEX_TERRAFORM"();',
+        )
+        return {"result": out}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/terraform/upload-sample")
+def upload_sample_terraform(
+    settings=Depends(require_internal_job_token),
+) -> dict[str, Any]:
+    """Upload terraform/sample/main_hardcoded.tf into Snowflake terraform raw via stage+pipe."""
+    try:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[4]
+        tf = (root / "terraform" / "sample" / "main_hardcoded.tf").read_text(
+            encoding="utf-8"
+        )
+        return ingest_terraform_sample_file(
+            settings, content=tf, filename="terraform_sample_main_hardcoded.tf"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/terraform/upload")
+def upload_terraform_main_tf(
+    settings=Depends(require_internal_job_token),
+    content: str = Body(
+        ...,
+        description="Terraform HCL content for a main.tf (prefer pre-resolved literals).",
+    ),
+    filename: str = Query(
+        default="main.tf", description="Filename to store alongside the payload."
+    ),
+) -> dict[str, Any]:
+    """Upload arbitrary Terraform main.tf content into Snowflake terraform raw via stage+pipe."""
+    try:
+        return ingest_terraform_sample_file(
+            settings, content=content, filename=filename
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/terraform/upload-resolved")
+def upload_terraform_resolved(
+    settings=Depends(require_internal_job_token),
+    resources: list[dict[str, Any]] = Body(
+        ...,
+        description=(
+            "Resolved/normalized terraform resources (already has literals). "
+            "Example resource: {resource_type:'digitalocean_droplet', name:'app', region:'nyc3', size:'s-4vcpu-8gb'}"
+        ),
+    ),
+    filename: str = Query(
+        default="resolved_resources.json",
+        description="Name stored alongside payload in Snowflake.",
+    ),
+) -> dict[str, Any]:
+    """Upload resolved terraform resources JSON into Snowflake terraform raw via stage+pipe."""
+    try:
+        return ingest_terraform_resolved_resources(
+            settings, resources=resources, filename=filename
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/terraform/clean-now")
+def clean_terraform_now(settings=Depends(require_internal_job_token)) -> dict[str, Any]:
+    """Clean terraform raw → terraform clean (extract fields; idempotent)."""
+    try:
+        names = SnowflakeNames.from_settings(settings)
+        out = run_sql(
+            settings,
+            sql=f'CALL "{names.database}"."{names.schema_terraform}"."SP_CLEAN_RAW"();',
         )
         return {"result": out}
     except Exception as e:

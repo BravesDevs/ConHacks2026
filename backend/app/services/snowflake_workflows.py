@@ -74,6 +74,68 @@ def ensure_cleaning_procs_and_tasks(settings: Settings) -> None:
     run_sql(settings, sql=sql)
 
 
+def ensure_terraform_cleaning(settings: Settings) -> None:
+    names = SnowflakeNames.from_settings(settings)
+    db = names.database
+
+    sql = f"""
+    USE DATABASE "{db}";
+
+    CREATE TABLE IF NOT EXISTS "{db}"."{names.schema_terraform}"."CLEAN" (
+      ingested_at TIMESTAMP_NTZ,
+      filename STRING,
+      droplet_size STRING,
+      region STRING,
+      payload VARIANT
+    );
+
+    ALTER TABLE "{db}"."{names.schema_terraform}"."CLEAN" ADD COLUMN IF NOT EXISTS droplet_size STRING;
+    ALTER TABLE "{db}"."{names.schema_terraform}"."CLEAN" ADD COLUMN IF NOT EXISTS region STRING;
+
+    CREATE TABLE IF NOT EXISTS "{db}"."{names.schema_terraform}"."CLEAN_STATE" (
+      last_cleaned_at TIMESTAMP_NTZ
+    );
+
+    INSERT INTO "{db}"."{names.schema_terraform}"."CLEAN_STATE"(last_cleaned_at)
+    SELECT TO_TIMESTAMP_NTZ(0)
+    WHERE NOT EXISTS (SELECT 1 FROM "{db}"."{names.schema_terraform}"."CLEAN_STATE");
+
+    CREATE OR REPLACE PROCEDURE "{db}"."{names.schema_terraform}"."SP_CLEAN_RAW"()
+    RETURNS STRING
+    LANGUAGE SQL
+    AS
+    $$
+      BEGIN
+        CREATE TEMP TABLE IF NOT EXISTS _tmp_tf_state AS
+        SELECT COALESCE(MAX(last_cleaned_at), TO_TIMESTAMP_NTZ(0)) AS last_cleaned_at
+        FROM "{db}"."{names.schema_terraform}"."CLEAN_STATE";
+
+        INSERT INTO "{db}"."{names.schema_terraform}"."CLEAN"(ingested_at, filename, droplet_size, region, payload)
+        SELECT
+          r.ingested_at,
+          r.payload:filename::STRING AS filename,
+          res.value:size::STRING AS droplet_size,
+          res.value:region::STRING AS region,
+          res.value AS payload
+        FROM "{db}"."{names.schema_terraform}"."RAW" r,
+             LATERAL FLATTEN(input => r.payload:resources) res
+        WHERE r.payload:type::STRING = 'terraform_resolved'
+          AND res.value:resource_type::STRING = 'digitalocean_droplet'
+          AND r.ingested_at > (SELECT last_cleaned_at FROM _tmp_tf_state);
+
+        UPDATE "{db}"."{names.schema_terraform}"."CLEAN_STATE"
+        SET last_cleaned_at = (
+          SELECT COALESCE(MAX(ingested_at), (SELECT last_cleaned_at FROM _tmp_tf_state))
+          FROM "{db}"."{names.schema_terraform}"."RAW"
+        );
+
+        RETURN 'ok';
+      END;
+    $$;
+    """
+    run_sql(settings, sql=sql)
+
+
 def ensure_suggestion_procs_and_tasks(settings: Settings) -> None:
     names = SnowflakeNames.from_settings(settings)
     db = names.database
@@ -264,14 +326,33 @@ def ensure_suggestion_procs_and_tasks(settings: Settings) -> None:
           ON s.vcpus >= r.req_vcpus AND s.memory_mb >= r.req_mem_mb
         QUALIFY ROW_NUMBER() OVER (PARTITION BY r.resource_id ORDER BY s.price_monthly ASC, s.vcpus ASC, s.memory_mb ASC) = 1;
 
+        -- If terraform clean has a droplet size variable, try to read it; otherwise keep old_size unknown.
+        CREATE TEMP TABLE IF NOT EXISTS _tmp_old AS
+        SELECT
+          m.resource_id,
+          t.droplet_size AS old_size
+        FROM _tmp_choice m
+        LEFT JOIN "{db}"."{names.schema_terraform}"."CLEAN" t
+          ON 1=1
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY m.resource_id
+          ORDER BY IFF(t.droplet_size IS NOT NULL, 0, 1), t.ingested_at DESC
+        ) = 1;
+
         INSERT INTO "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS"(resource_id, old_size, new_size, estimated_savings, reason)
         SELECT
           c.resource_id,
-          'unknown' AS old_size,
+          COALESCE(o.old_size, 'unknown') AS old_size,
           c.new_size,
-          NULL AS estimated_savings,
+          CASE
+            WHEN o.old_size IS NULL THEN NULL
+            ELSE (old_s.price_monthly - new_s.price_monthly)
+          END AS estimated_savings,
           'cpu_mem_sizes_catalog' AS reason
-        FROM _tmp_choice c;
+        FROM _tmp_choice c
+        LEFT JOIN _tmp_old o ON o.resource_id = c.resource_id
+        LEFT JOIN "{db}"."{names.schema_cost}"."SIZES" new_s ON new_s.slug = c.new_size
+        LEFT JOIN "{db}"."{names.schema_cost}"."SIZES" old_s ON old_s.slug = o.old_size;
         RETURN 'ok';
       END;
     $$;
