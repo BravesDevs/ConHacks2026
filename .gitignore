@@ -706,3 +706,5 @@ CLAUDE.md
 .codex
 .vite
 INTEGRATION.md
+
+backend/snowflake_config.md

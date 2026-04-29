@@ -122,6 +122,20 @@ def run_analyze_now(settings=Depends(require_internal_job_token)) -> dict[str, A
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.post("/workflows/refresh-sizes-now")
+def refresh_sizes_now(settings=Depends(require_internal_job_token)) -> dict[str, Any]:
+    """Refresh normalized DigitalOcean sizes catalog (COST.SIZES_RAW → COST.SIZES)."""
+    try:
+        names = SnowflakeNames.from_settings(settings)
+        out = run_sql(
+            settings,
+            sql=f'CALL "{names.database}"."{names.schema_cost}"."SP_REFRESH_SIZES"();',
+        )
+        return {"result": out}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.post("/workflows/run-cortex-now")
 def run_cortex_now(settings=Depends(require_internal_job_token)) -> dict[str, Any]:
     """Run the Cortex stored procedure immediately (placeholder implementation today)."""
