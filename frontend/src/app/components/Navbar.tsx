@@ -29,7 +29,7 @@ export default function Navbar({ currentStep }: NavbarProps) {
           </div>
         </div>
 
-        {/* Step indicators */}
+        {/* Step indicators... */}
         <div className="flex items-center gap-0">
           {steps.map((step, index) => {
             const completed = step.number < currentStep;
