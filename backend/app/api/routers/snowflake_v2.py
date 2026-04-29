@@ -373,6 +373,7 @@ def cortex_chat(
             )::STRING AS ANSWER;
             """,
         )
-        return {"answer": out[0]["ANSWER"] if out else None}
+        rows = [r for r in out if "ANSWER" in r]
+        return {"answer": rows[0]["ANSWER"] if rows else None}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
