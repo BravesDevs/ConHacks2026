@@ -230,6 +230,7 @@ def upload_json_to_stage_and_ingest(
         with _connect_integration(settings) as conn:
             cur = conn.cursor()
             try:
+                cur.execute("ALTER SESSION SET TIMEZONE = 'UTC';")
                 cur.execute(
                     f"PUT file://{tmp_path.as_posix()} {stage_path}/{remote_name} AUTO_COMPRESS=FALSE OVERWRITE=TRUE;"
                 )
@@ -263,3 +264,70 @@ def upload_json_to_stage_and_ingest(
             tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def refresh_pipe(settings: Settings, *, pipe_fqn: str) -> dict[str, Any]:
+    with _connect_integration(settings) as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER SESSION SET TIMEZONE = 'UTC';")
+            cur.execute(f"ALTER PIPE {pipe_fqn} REFRESH;")
+            cur.execute(f"SELECT SYSTEM$PIPE_STATUS('{pipe_fqn}')")
+            status_raw = cur.fetchone()[0]
+            status = (
+                json.loads(status_raw) if isinstance(status_raw, str) else status_raw
+            )
+            return {"pipe_status": status}
+        finally:
+            cur.close()
+
+
+def run_sql(settings: Settings, *, sql: str) -> list[dict[str, Any]]:
+    with _connect_integration(settings) as conn:
+        try:
+            results: list[dict[str, Any]] = []
+            for cur in conn.execute_string(
+                "ALTER SESSION SET TIMEZONE = 'UTC';\n" + sql
+            ):
+                # Each item is a cursor positioned on that statement's results.
+                try:
+                    cols = [c[0] for c in (cur.description or [])]
+                    rows = cur.fetchall() if cur.description else []
+                except Exception:
+                    cols, rows = [], []
+                if cols and rows:
+                    for r in rows:
+                        results.append({cols[i]: r[i] for i in range(len(cols))})
+            return results
+        finally:
+            pass
+
+
+def run_sql_with_context(settings: Settings, *, sql: str) -> list[dict[str, Any]]:
+    ctx = []
+    if settings.snowflake_role:
+        ctx.append(f'USE ROLE "{settings.snowflake_role}";')
+    if settings.snowflake_warehouse:
+        ctx.append(f'USE WAREHOUSE "{settings.snowflake_warehouse}";')
+    if settings.snowflake_database:
+        ctx.append(f'USE DATABASE "{settings.snowflake_database}";')
+    if settings.snowflake_schema_terraform and settings.snowflake_database:
+        ctx.append(
+            f'USE SCHEMA "{settings.snowflake_database}"."{settings.snowflake_schema_terraform}";'
+        )
+    prefix = "\n".join(ctx) + ("\n" if ctx else "")
+    return run_sql(settings, sql=prefix + sql)
+
+
+def run_sql_with_context_no_schema(
+    settings: Settings, *, sql: str
+) -> list[dict[str, Any]]:
+    ctx = []
+    if settings.snowflake_role:
+        ctx.append(f'USE ROLE "{settings.snowflake_role}";')
+    if settings.snowflake_warehouse:
+        ctx.append(f'USE WAREHOUSE "{settings.snowflake_warehouse}";')
+    if settings.snowflake_database:
+        ctx.append(f'USE DATABASE "{settings.snowflake_database}";')
+    prefix = "\n".join(ctx) + ("\n" if ctx else "")
+    return run_sql(settings, sql=prefix + sql)

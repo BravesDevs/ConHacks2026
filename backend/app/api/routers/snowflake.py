@@ -7,7 +7,7 @@ from app.services.ingest_service import ingest_digitalocean_sizes
 from app.services.snowflake_service import ensure_snowflake_setup
 
 
-router = APIRouter(prefix="/snowflake", tags=["snowflake"])
+router = APIRouter(prefix="/snowflake", tags=["snowflake-setup"])
 
 
 @router.post("/setup")
