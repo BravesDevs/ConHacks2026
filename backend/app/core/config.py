@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     internal_job_token: str = ""
     manual_trigger_token: str = ""
 
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_redirect_uri: str = ""
+    github_token_encryption_key: str = ""
+
     scheduler_enabled: bool = True
 
 
