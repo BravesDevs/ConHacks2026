@@ -320,7 +320,19 @@ def cortex_summarize(settings=Depends(require_internal_job_token)) -> dict[str, 
             )
             inserted += 1
 
-        return {"status": "ok", "inserted": inserted}
+        # Return the latest summary rows so the caller can display them immediately.
+        rows = run_sql_with_context(
+            settings,
+            sql=f"""
+            SELECT created_at, suggestion_type, resource_id, explanation
+            FROM "{names.database}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
+            WHERE suggestion_type='recommendation_summary'
+            ORDER BY created_at DESC
+            LIMIT 25;
+            """,
+        )
+        rows = [r for r in rows if "CREATED_AT" in r]
+        return {"status": "ok", "inserted": inserted, "summaries": rows}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
