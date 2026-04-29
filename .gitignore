@@ -703,3 +703,6 @@ $RECYCLE.BIN/
 __MACOSX/
 
 CLAUDE.md
+.codex
+.vite
+INTEGRATION.md
