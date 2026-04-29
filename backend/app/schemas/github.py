@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -38,3 +39,19 @@ class RevokeOut(BaseModel):
     user_id: str
     deleted: bool
     revoked_at_github: bool
+
+
+class RepoOut(BaseModel):
+    name: str
+    full_name: str
+    html_url: str
+    private: bool
+
+
+class TreeNode(BaseModel):
+    name: str
+    type: Literal["file", "dir"]
+    children: list["TreeNode"] | None = None
+
+
+TreeNode.model_rebuild()
