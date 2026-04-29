@@ -20,8 +20,6 @@ from app.models.github_connection import GitHubConnection
 from app.schemas.github import (
     GitHubConnectionOut,
     OAuthCallbackOut,
-    RevokeOut,
-    TrackReposIn,
     RepoOut,
     RevokeOut,
     TrackReposIn,
@@ -180,7 +178,9 @@ async def list_user_repos(
     username: str,
     db: AsyncSession = Depends(get_db),
 ) -> list[RepoOut]:
-    res = await db.execute(select(GitHubConnection).where(GitHubConnection.user_id == username))
+    res = await db.execute(
+        select(GitHubConnection).where(GitHubConnection.user_id == username)
+    )
     conn = res.scalar_one_or_none()
     if conn is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
@@ -380,7 +380,9 @@ async def get_repo_file(
     content_b64 = payload.get("content")
     if encoding != "base64" or not content_b64:
         # Files >1MB return empty content per the Contents API; caller should use the blob endpoint.
-        raise HTTPException(status_code=413, detail="file_too_large_or_unsupported_encoding")
+        raise HTTPException(
+            status_code=413, detail="file_too_large_or_unsupported_encoding"
+        )
 
     try:
         raw = base64.b64decode(content_b64, validate=False)
