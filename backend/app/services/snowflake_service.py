@@ -230,6 +230,7 @@ def upload_json_to_stage_and_ingest(
         with _connect_integration(settings) as conn:
             cur = conn.cursor()
             try:
+                cur.execute("ALTER SESSION SET TIMEZONE = 'UTC';")
                 cur.execute(
                     f"PUT file://{tmp_path.as_posix()} {stage_path}/{remote_name} AUTO_COMPRESS=FALSE OVERWRITE=TRUE;"
                 )
@@ -269,6 +270,7 @@ def refresh_pipe(settings: Settings, *, pipe_fqn: str) -> dict[str, Any]:
     with _connect_integration(settings) as conn:
         cur = conn.cursor()
         try:
+            cur.execute("ALTER SESSION SET TIMEZONE = 'UTC';")
             cur.execute(f"ALTER PIPE {pipe_fqn} REFRESH;")
             cur.execute(f"SELECT SYSTEM$PIPE_STATUS('{pipe_fqn}')")
             status_raw = cur.fetchone()[0]
@@ -284,7 +286,9 @@ def run_sql(settings: Settings, *, sql: str) -> list[dict[str, Any]]:
     with _connect_integration(settings) as conn:
         try:
             results: list[dict[str, Any]] = []
-            for cur in conn.execute_string(sql):
+            for cur in conn.execute_string(
+                "ALTER SESSION SET TIMEZONE = 'UTC';\n" + sql
+            ):
                 # Each item is a cursor positioned on that statement's results.
                 try:
                     cols = [c[0] for c in (cur.description or [])]
