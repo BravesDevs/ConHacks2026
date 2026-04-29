@@ -1,0 +1,14 @@
+do_token     = "dop_v1_REPLACE_ME"
+region       = "nyc3"
+project_name = "conhacks"
+environment  = "dev"
+
+postgres_version    = "16"
+postgres_size       = "db-s-1vcpu-1gb"
+postgres_node_count = 1
+postgres_db_name    = "app"
+
+create_redis     = true
+redis_version    = "7"
+redis_size       = "db-s-1vcpu-1gb"
+redis_node_count = 1
