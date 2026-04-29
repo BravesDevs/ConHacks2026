@@ -1,29 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { ArrowLeft, Bell, Lock, User, CreditCard, Moon, LogOut } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { ArrowLeft, Bell, Lock, User, CreditCard, LogOut } from 'lucide-react';
+
 
 export default function SettingsPage() {
   const navigate = useNavigate();
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    navigate('/login');
-  };
-  const [activeTab, setActiveTab] = useState('profile');
-  const [isDarkMode, setIsDarkMode] = useState(() => {
-    return localStorage.getItem('darkMode') === 'true';
-  });
 
-  useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('darkMode', 'true');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('darkMode', 'false');
-    }
-  }, [isDarkMode]);
+  const [activeTab, setActiveTab] = useState('profile');
 
   const tabs = [
     { id: 'profile', label: 'Profile', icon: User },
@@ -52,19 +36,6 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-7xl px-8 py-8">
         <div className="mb-8 flex items-center justify-between">
           <h1 className="text-3xl dark:text-white">Settings</h1>
-          <div className="flex items-center gap-3 rounded-lg border border-black/10 dark:border-white/10 bg-white dark:bg-gray-800 px-4 py-2">
-            <Moon className="h-4 w-4 text-black/60 dark:text-white/60" />
-            <span className="text-sm text-black/60 dark:text-white/60">Dark mode</span>
-            <label className="relative inline-flex cursor-pointer items-center">
-              <input
-                type="checkbox"
-                className="peer sr-only"
-                checked={isDarkMode}
-                onChange={(e) => setIsDarkMode(e.target.checked)}
-              />
-              <div className="peer h-6 w-11 rounded-full bg-black/10 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:bg-[#1D9E75] peer-checked:after:translate-x-full"></div>
-            </label>
-          </div>
         </div>
 
         <div className="grid grid-cols-[240px_1fr] gap-6">
@@ -88,13 +59,7 @@ export default function SettingsPage() {
                 );
               })}
             </div>
-            <button
-              onClick={handleLogout}
-              className="flex w-full items-center gap-3 rounded-lg px-4 py-2.5 text-left text-red-500 transition-colors hover:bg-red-50 dark:hover:bg-red-500/10 mt-4"
-            >
-              <LogOut className="h-4 w-4" />
-              <span className="text-sm">Log out</span>
-            </button>
+
           </div>
 
           <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-gray-800 p-8">
