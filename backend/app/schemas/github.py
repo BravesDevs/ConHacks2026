@@ -32,3 +32,9 @@ class OAuthCallbackOut(BaseModel):
     user_id: str
     tracked_repos: list[str]
     connected: bool = True
+
+
+class RevokeOut(BaseModel):
+    user_id: str
+    deleted: bool
+    revoked_at_github: bool

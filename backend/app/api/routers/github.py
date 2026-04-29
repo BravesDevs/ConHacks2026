@@ -4,16 +4,17 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
+from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.security import encrypt_token
+from app.core.security import decrypt_token, encrypt_token
 from app.db.session import get_db
 from app.models.github_connection import GitHubConnection
-from app.schemas.github import GitHubConnectionOut, OAuthCallbackOut, TrackReposIn
+from app.schemas.github import GitHubConnectionOut, OAuthCallbackOut, RevokeOut, TrackReposIn
 from app.services.events import event_bus
 
 
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/github", tags=["github"])
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
+GITHUB_REVOKE_GRANT_URL = "https://api.github.com/applications/{client_id}/grant"
 GITHUB_OAUTH_SCOPES = "repo read:user"
 
 
@@ -132,3 +134,50 @@ async def track_repos(
         {"type": "github.repos.tracked", "user_id": body.user_id, "repos": list(conn.tracked_repos)},
     )
     return GitHubConnectionOut.model_validate(conn)
+
+
+@router.delete("/connections/{user_id}", response_model=RevokeOut)
+async def revoke_connection(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> RevokeOut:
+    # auth: open for MVP; gate behind a bearer or session token once user auth lands.
+    settings = get_settings()
+    if not settings.github_client_id or not settings.github_client_secret:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="oauth_not_configured")
+
+    res = await db.execute(select(GitHubConnection).where(GitHubConnection.user_id == user_id))
+    conn = res.scalar_one_or_none()
+    if conn is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    try:
+        access_token: str | None = decrypt_token(conn.encrypted_token)
+    except InvalidToken:
+        access_token = None
+
+    revoked_at_github = False
+    if access_token:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.request(
+                "DELETE",
+                GITHUB_REVOKE_GRANT_URL.format(client_id=settings.github_client_id),
+                auth=(settings.github_client_id, settings.github_client_secret),
+                headers={"Accept": "application/vnd.github+json"},
+                json={"access_token": access_token},
+            )
+        if r.status_code in (204, 404):
+            revoked_at_github = True
+        elif r.status_code == 401:
+            raise HTTPException(status_code=502, detail="github_revoke_unauthorized")
+        else:
+            raise HTTPException(status_code=502, detail="github_revoke_failed")
+
+    await db.delete(conn)
+    await db.commit()
+
+    await event_bus.publish(
+        "github.disconnected",
+        {"type": "github.disconnected", "user_id": user_id, "revoked_at_github": revoked_at_github},
+    )
+    return RevokeOut(user_id=user_id, deleted=True, revoked_at_github=revoked_at_github)
