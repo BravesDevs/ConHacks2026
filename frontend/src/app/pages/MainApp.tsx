@@ -4,6 +4,7 @@ import Navbar from '../components/Navbar';
 import ConnectScreen from '../components/ConnectScreen';
 import ScanningScreen from '../components/ScanningScreen';
 import DashboardScreen from '../components/DashboardScreen';
+import AiChat from '../components/AiChat';
 import type { ScanConfig } from '../types';
 
 export type { ScanConfig };
@@ -12,6 +13,7 @@ export default function MainApp() {
   const [searchParams, setSearchParams] = useSearchParams();
   const stepParam = searchParams.get('step');
   const [currentStep, setCurrentStep] = useState(stepParam ? parseInt(stepParam) : 1);
+  const [chatOpen, setChatOpen] = useState(false);
   const [scanConfig, setScanConfig] = useState<ScanConfig>({
     githubToken: '',
     repoUrl: '',
@@ -35,7 +37,8 @@ export default function MainApp() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <Navbar currentStep={currentStep} />
+      <Navbar currentStep={currentStep} onChatOpen={() => setChatOpen(true)} />
+      <AiChat open={chatOpen} onOpenChange={setChatOpen} />
 
       {currentStep === 1 && (
         <ConnectScreen

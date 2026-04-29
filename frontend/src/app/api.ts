@@ -10,6 +10,12 @@ export async function fetchAnalysis(_config: ScanConfig): Promise<AnalysisResult
   return analysisResult;
 }
 
+export async function sendChatMessage(message: string): Promise<string> {
+  // TODO: replace with Cortex AI API call
+  await delay(800);
+  return 'I am analysing your infrastructure. Cortex AI integration coming soon.';
+}
+
 export async function approveRecommendation(
   resourceId: string,
   config: Pick<ScanConfig, 'repoUrl' | 'branch'>

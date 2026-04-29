@@ -60,3 +60,10 @@ export interface AnalysisResult {
   scannedAt: string;
   resources: ResourceRecord[];
 }
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}

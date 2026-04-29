@@ -1,8 +1,9 @@
-import { Settings } from 'lucide-react';
+import { Settings, MessageSquare } from 'lucide-react';
 import { useNavigate } from 'react-router';
 
 interface NavbarProps {
   currentStep: number;
+  onChatOpen: () => void;
 }
 
 const steps = [
@@ -11,7 +12,7 @@ const steps = [
   { number: 3, label: 'INSIGHTS' },
 ];
 
-export default function Navbar({ currentStep }: NavbarProps) {
+export default function Navbar({ currentStep, onChatOpen }: NavbarProps) {
   const navigate = useNavigate();
 
   return (
@@ -65,14 +66,23 @@ export default function Navbar({ currentStep }: NavbarProps) {
           })}
         </div>
 
-        {/* Settings */}
-        <button
-          onClick={() => navigate('/settings')}
-          className="flex h-8 w-8 items-center justify-center border border-white/08 text-white/30 transition-colors hover:border-white/20 hover:text-white/60"
-          title="Settings"
-        >
-          <Settings className="h-3.5 w-3.5" />
-        </button>
+        {/* Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onChatOpen}
+            className="flex h-8 w-8 items-center justify-center border border-white/08 text-white/30 transition-colors hover:border-white/40 hover:text-[#f97316]/60"
+            title="AI Assistant"
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => navigate('/settings')}
+            className="flex h-8 w-8 items-center justify-center border border-white/08 text-white/30 transition-colors hover:border-white/40 hover:text-[#f97316]/60"
+            title="Settings"
+          >
+            <Settings className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Active step accent line */}
