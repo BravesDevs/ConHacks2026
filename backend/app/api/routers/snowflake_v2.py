@@ -245,6 +245,39 @@ def analyze(settings=Depends(require_internal_job_token)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+recommendations_router = APIRouter(
+    prefix="/snowflake/v2/recommendations", tags=["snowflake-workflows"]
+)
+
+
+@recommendations_router.get("")
+def list_cost_recommendations(
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=500,
+        description="Max number of most-recent recommendations to return.",
+    ),
+    settings=Depends(require_internal_job_token),
+) -> dict[str, Any]:
+    """Return the most recent rows from COST.COST_RECOMMENDATIONS."""
+    try:
+        names = SnowflakeNames.from_settings(settings)
+        rows = run_sql_with_context(
+            settings,
+            sql=f"""
+            SELECT created_at, resource_id, old_size, new_size, estimated_savings, reason
+            FROM "{names.database}"."{names.schema_cost}"."COST_RECOMMENDATIONS"
+            ORDER BY created_at DESC
+            LIMIT {limit};
+            """,
+        )
+        rows = [r for r in rows if "CREATED_AT" in r]
+        return {"items": rows, "limit": limit}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 cortex_router = APIRouter(prefix="/snowflake/v2/cortex", tags=["snowflake-cortex"])
 
 

@@ -9,6 +9,7 @@ from app.api.routers.runs import router as runs_router
 from app.api.routers.snowflake_v2 import (
     cortex_router as snowflake_v2_cortex_router,
     ingest_router as snowflake_v2_ingest_router,
+    recommendations_router as snowflake_v2_recommendations_router,
     router as snowflake_v2_router,
     terraform_router as snowflake_v2_terraform_router,
     workflows_router as snowflake_v2_workflows_router,
@@ -26,4 +27,5 @@ api_router.include_router(snowflake_v2_router)
 api_router.include_router(snowflake_v2_ingest_router)
 api_router.include_router(snowflake_v2_terraform_router)
 api_router.include_router(snowflake_v2_workflows_router)
+api_router.include_router(snowflake_v2_recommendations_router)
 api_router.include_router(snowflake_v2_cortex_router)
