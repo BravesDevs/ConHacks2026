@@ -22,21 +22,21 @@ function SecretField({
   const [visible, setVisible] = useState(false);
   return (
     <div>
-      <label className="mb-1.5 block font-['Chakra_Petch'] text-[11px] tracking-[0.14em] text-white/40">
+      <label className="mb-1.5 block font-['Chakra_Petch'] text-[11px] tracking-[0.14em] text-white/85">
         {label}
       </label>
-      <div className="relative flex items-center border border-white/08 bg-white/[0.03] transition-colors focus-within:border-[#f97316]/50 focus-within:bg-[#f97316]/[0.03]">
+      <div className="relative flex items-center border border-white/15 bg-white/[0.03] transition-colors focus-within:border-white/50 focus-within:bg-white/10">
         <input
           type={visible ? 'text' : 'password'}
           value={value}
           onChange={e => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full bg-transparent px-4 py-3 font-['IBM_Plex_Mono'] text-sm text-white/80 placeholder:text-white/15 focus:outline-none"
+          className="w-full bg-transparent px-4 py-3 font-['IBM_Plex_Mono'] text-sm text-white/80 placeholder:text-white/25 focus:outline-none"
         />
         <button
           type="button"
           onClick={() => setVisible(v => !v)}
-          className="mr-3 flex-shrink-0 text-white/20 hover:text-white/50 transition-colors"
+          className="mr-3 flex-shrink-0 text-white/60 hover:text-white/50 transition-colors"
         >
           {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
         </button>
@@ -60,17 +60,17 @@ function TextField({
 }) {
   return (
     <div>
-      <label className="mb-1.5 block font-['Chakra_Petch'] text-[11px] tracking-[0.14em] text-white/40">
+      <label className="mb-1.5 block font-['Chakra_Petch'] text-[11px] tracking-[0.14em] text-white/85">
         {label}
-        {hint && <span className="ml-2 font-['IBM_Plex_Mono'] normal-case tracking-normal text-white/20">{hint}</span>}
+        {hint && <span className="ml-2 font-['IBM_Plex_Mono'] normal-case tracking-normal text-white/60">{hint}</span>}
       </label>
-      <div className="border border-white/08 bg-white/[0.03] transition-colors focus-within:border-[#f97316]/50 focus-within:bg-[#f97316]/[0.03]">
+      <div className="border border-white/15 bg-white/[0.03] transition-colors focus-within:border-white/50 focus-within:bg-white/10">
         <input
           type="text"
           value={value}
           onChange={e => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full bg-transparent px-4 py-3 font-['IBM_Plex_Mono'] text-sm text-white/80 placeholder:text-white/15 focus:outline-none"
+          className="w-full bg-transparent px-4 py-3 font-['IBM_Plex_Mono'] text-sm text-white/80 placeholder:text-white/25 focus:outline-none"
         />
       </div>
     </div>
@@ -90,27 +90,27 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
         {/* Header */}
         <div className="mb-10">
           <div className="mb-3 flex items-center gap-2">
-            <div className="h-px w-8 bg-[#f97316]/60" />
-            <span className="font-['Chakra_Petch'] text-[11px] tracking-[0.18em] text-[#f97316]/70">SYSTEM INITIALIZATION</span>
+            <div className="h-px w-8 bg-white/50" />
+            <span className="font-['Chakra_Petch'] text-[11px] tracking-[0.18em] text-white/70">SYSTEM INITIALIZATION</span>
           </div>
           <h1 className="font-['Chakra_Petch'] text-3xl font-700 tracking-tight text-white">
             Connect your infrastructure
           </h1>
-          <p className="mt-3 text-sm leading-relaxed text-white/40">
+          <p className="mt-3 text-sm leading-relaxed text-white/80">
             Provide access credentials to begin the infrastructure scan. Tokens are used only for this session.
           </p>
         </div>
 
         {/* Form panel */}
-        <div className="tech-bracket relative border border-white/08 bg-white/[0.02]">
+        <div className="tech-bracket relative border border-white/15 bg-white/[0.02]">
           <div className="space-y-6 p-7">
 
             {/* GitHub section */}
             <div>
               <div className="mb-4 flex items-center gap-2.5">
-                <Github className="h-4 w-4 text-white/40" />
-                <span className="font-['Chakra_Petch'] text-[11px] font-600 tracking-[0.16em] text-white/50">GITHUB</span>
-                <div className="h-px flex-1 bg-white/06" />
+                <Github className="h-4 w-4 text-white/60" />
+                <span className="font-['Chakra_Petch'] text-[11px] font-600 tracking-[0.16em] text-white/60">GITHUB</span>
+                <div className="h-px flex-1 bg-white/15" />
               </div>
               <div className="space-y-4">
                 <SecretField
@@ -128,14 +128,14 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
               </div>
             </div>
 
-            <div className="h-px bg-white/05" />
+            <div className="h-px bg-white/15" />
 
             {/* DigitalOcean section */}
             <div>
               <div className="mb-4 flex items-center gap-2.5">
-                <Server className="h-4 w-4 text-white/40" />
-                <span className="font-['Chakra_Petch'] text-[11px] font-600 tracking-[0.16em] text-white/50">DIGITALOCEAN</span>
-                <div className="h-px flex-1 bg-white/06" />
+                <Server className="h-4 w-4 text-white/60" />
+                <span className="font-['Chakra_Petch'] text-[11px] font-600 tracking-[0.16em] text-white/90">DIGITALOCEAN</span>
+                <div className="h-px flex-1 bg-white/15" />
                 <div className="flex items-center gap-1 border border-[#34d399]/20 bg-[#34d399]/05 px-2 py-0.5">
                   <Lock className="h-2.5 w-2.5 text-[#34d399]/60" />
                   <span className="font-['Chakra_Petch'] text-[9px] tracking-[0.12em] text-[#34d399]/60">ENCRYPTED</span>
@@ -153,14 +153,14 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
             <button
               type="button"
               onClick={() => setShowAdvanced(v => !v)}
-              className="flex items-center gap-2 text-[11px] font-['Chakra_Petch'] tracking-[0.1em] text-white/25 hover:text-white/50 transition-colors"
+              className="flex items-center gap-2 text-[11px] font-['Chakra_Petch'] tracking-[0.1em] text-white/60 hover:text-white/50 transition-colors"
             >
               <span>{showAdvanced ? '▲' : '▼'}</span>
               ADVANCED OPTIONS
             </button>
 
             {showAdvanced && (
-              <div className="space-y-4 border-t border-white/05 pt-4">
+              <div className="space-y-4 border-t border-white/15 pt-4">
                 <div className="grid grid-cols-2 gap-4">
                   <TextField
                     label="BRANCH"
@@ -193,7 +193,7 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
           <button
             type="button"
             onClick={() => onChange({ githubToken: '', repoUrl: '', branch: 'main', doApiKey: '', doProject: '', regionFilter: '' })}
-            className="font-['Chakra_Petch'] text-[11px] tracking-[0.12em] text-white/25 hover:text-white/50 transition-colors"
+            className="font-['Chakra_Petch'] text-[11px] tracking-[0.12em] text-white/60 hover:text-white/50 transition-colors"
           >
             CLEAR FIELDS
           </button>
@@ -203,8 +203,8 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
             disabled={!canAnalyze}
             className={`group flex items-center gap-3 border px-6 py-3 font-['Chakra_Petch'] text-sm font-600 tracking-[0.1em] transition-all ${
               canAnalyze
-                ? 'border-[#f97316] bg-[#f97316]/10 text-[#f97316] hover:bg-[#f97316]/20'
-                : 'cursor-not-allowed border-white/08 text-white/20'
+                ? 'border-white/50 bg-white/10 text-white/70 hover:bg-white/20'
+                : 'cursor-not-allowed border-white/15 text-white/40'
             }`}
           >
             INITIALIZE SCAN

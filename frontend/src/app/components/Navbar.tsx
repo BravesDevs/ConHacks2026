@@ -25,11 +25,11 @@ export default function Navbar({ currentStep }: NavbarProps) {
           </div>
           <div className="flex flex-col leading-none">
             <span className="font-['Chakra_Petch'] text-sm font-600 tracking-[0.12em] text-white">INFRALENS</span>
-            <span className="mt-0.5 text-[10px] tracking-[0.08em] text-white/30">INFRASTRUCTURE INTELLIGENCE</span>
+            <span className="mt-0.5 text-[10px] tracking-[0.08em] text-[#f97316]/85">INFRASTRUCTURE INTELLIGENCE</span>
           </div>
         </div>
 
-        {/* Step indicators */}
+        {/* Step indicators... */}
         <div className="flex items-center gap-0">
           {steps.map((step, index) => {
             const completed = step.number < currentStep;

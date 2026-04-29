@@ -8,6 +8,7 @@ from app.services.snowflake_service import (
     SnowflakeNames,
     upload_json_to_stage_and_ingest,
 )
+from app.services.terraform_reader import parse_terraform_dir
 
 
 def ingest_metrics_json(
@@ -96,6 +97,14 @@ def ingest_terraform_resolved_resources(
         pipe_fqn=pipe,
         filename=filename,
     )
+def ingest_terraform_from_local(
+    settings: Settings, *, run_id: str, filename: str | None = None
+) -> dict[str, Any]:
+    if not settings.terraform_local_path:
+        raise ValueError("TERRAFORM_LOCAL_PATH is not configured")
+    payload = parse_terraform_dir(settings.terraform_local_path)
+    payload["run_id"] = run_id
+    return ingest_terraform_config_json(settings, payload=payload, filename=filename)
 
 
 async def ingest_digitalocean_sizes(

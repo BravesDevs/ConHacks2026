@@ -57,3 +57,30 @@ class TreeNode(BaseModel):
 
 
 TreeNode.model_rebuild()
+
+
+class CreatePRIn(BaseModel):
+    repo_owner: str
+    repo_name: str
+    file_path: str
+    content: str
+    base_branch: str
+
+
+class CreatePROut(BaseModel):
+    pr_id: int
+    pr_url: str
+    branch_name: str
+
+
+class UpdateFileIn(BaseModel):
+    content: str
+    message: str
+
+
+class UpdateFileOut(BaseModel):
+    path: str
+    branch: str
+    commit_sha: str
+    content_sha: str
+    created: bool
