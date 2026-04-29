@@ -50,6 +50,8 @@ class Settings(BaseSettings):
 
     digitalocean_token: str = ""
 
+    terraform_local_path: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
