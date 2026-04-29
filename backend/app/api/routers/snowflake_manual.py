@@ -215,14 +215,50 @@ def refresh_sizes_now(settings=Depends(require_internal_job_token)) -> dict[str,
 
 @router.post("/workflows/run-cortex-now")
 def run_cortex_now(settings=Depends(require_internal_job_token)) -> dict[str, Any]:
-    """Run the Cortex stored procedure immediately (placeholder implementation today)."""
+    """DEPRECATED: Cortex rewrite is disabled; use /workflows/run-cortex-summarize-now or /cortex/chat."""
+    try:
+        names = SnowflakeNames.from_settings(settings)
+        return {
+            "status": "disabled",
+            "message": "Terraform rewrite via Cortex has been disabled. Use /workflows/run-cortex-summarize-now or /cortex/chat.",
+            "database": names.database,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/workflows/run-cortex-summarize-now")
+def run_cortex_summarize_now(
+    settings=Depends(require_internal_job_token),
+) -> dict[str, Any]:
+    """Summarize and explain COST_RECOMMENDATIONS using Cortex + latest metrics payload."""
     try:
         names = SnowflakeNames.from_settings(settings)
         out = run_sql(
             settings,
-            sql=f'CALL "{names.database}"."{names.schema_terraform}"."SP_CORTEX_TERRAFORM"();',
+            sql=f'CALL "{names.database}"."{names.schema_terraform}"."SP_CORTEX_SUMMARIZE_RECOMMENDATIONS"();',
         )
         return {"result": out}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/cortex/chat")
+def cortex_chat(
+    settings=Depends(require_internal_job_token),
+    question: str = Body(
+        ..., embed=True, description="User question about recommendations/metrics."
+    ),
+) -> dict[str, Any]:
+    """Ask Cortex a question using COST_RECOMMENDATIONS + latest metrics + terraform resolved resources as context."""
+    try:
+        names = SnowflakeNames.from_settings(settings)
+        q = question.replace("'", "''")
+        out = run_sql(
+            settings,
+            sql=f'CALL "{names.database}"."{names.schema_terraform}"."SP_CORTEX_CHAT"(\'{q}\');',
+        )
+        return {"answer": out[0]["SP_CORTEX_CHAT"] if out else None}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

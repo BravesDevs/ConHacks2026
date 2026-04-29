@@ -375,27 +375,77 @@ def ensure_cortex_procs_and_tasks(settings: Settings) -> None:
 
     CREATE TABLE IF NOT EXISTS "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS" (
       created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+      suggestion_type STRING,
+      resource_id STRING,
       terraform_config VARIANT,
       explanation STRING
     );
 
-    CREATE OR REPLACE PROCEDURE "{db}"."{names.schema_terraform}"."SP_CORTEX_TERRAFORM"()
+    ALTER TABLE "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
+      ADD COLUMN IF NOT EXISTS suggestion_type STRING;
+    ALTER TABLE "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
+      ADD COLUMN IF NOT EXISTS resource_id STRING;
+
+    CREATE OR REPLACE PROCEDURE "{db}"."{names.schema_terraform}"."SP_CORTEX_SUMMARIZE_RECOMMENDATIONS"()
     RETURNS STRING
     LANGUAGE SQL
     AS
     $$
       BEGIN
-        -- Placeholder: wire up Snowflake Cortex calls once model/prompt is finalized.
-        INSERT INTO "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"(terraform_config, explanation)
-        SELECT PARSE_JSON('{{\"todo\":true}}'), 'cortex_not_implemented';
+        -- Summarize recommendations using Cortex (llama3.1-70b).
+        INSERT INTO "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"(suggestion_type, resource_id, terraform_config, explanation)
+        SELECT
+          'recommendation_summary' AS suggestion_type,
+          r.resource_id,
+          NULL AS terraform_config,
+          SNOWFLAKE.CORTEX.COMPLETE(
+            'llama3.1-70b',
+            CONCAT(
+              'You are a cloud cost optimization assistant. Explain the recommendation in plain English.\\n',
+              'Resource ID: ', r.resource_id, '\\n',
+              'Old size: ', r.old_size, ' New size: ', r.new_size, '\\n',
+              'Estimated savings (monthly): ', COALESCE(TO_VARCHAR(r.estimated_savings), 'unknown'), '\\n\\n',
+              'Metrics context (recent sample):\\n',
+              COALESCE(TO_VARCHAR(m.payload), 'no_metrics_payload')
+            )
+          )::STRING AS explanation
+        FROM "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS" r
+        LEFT JOIN "{db}"."{names.schema_metrics}"."CLEAN" m
+          ON m.resource_id = r.resource_id
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY r.resource_id ORDER BY m.ingested_at DESC) = 1;
         RETURN 'ok';
       END;
     $$;
 
-    CREATE TASK IF NOT EXISTS "{db}"."{names.schema_terraform}"."TASK_CORTEX_TERRAFORM"
-      WAREHOUSE = "{names.warehouse}"
-      SCHEDULE = 'USING CRON 30 * * * * UTC'
+    CREATE OR REPLACE PROCEDURE "{db}"."{names.schema_terraform}"."SP_CORTEX_CHAT"(
+      question STRING
+    )
+    RETURNS STRING
+    LANGUAGE SQL
+    EXECUTE AS CALLER
     AS
-      CALL "{db}"."{names.schema_terraform}"."SP_CORTEX_TERRAFORM"();
+    $$
+      BEGIN
+        RETURN SNOWFLAKE.CORTEX.COMPLETE(
+          'llama3.1-70b',
+          CONCAT(
+            'You are a helpful assistant for cloud cost optimization. Answer the user question using the context.\\n\\n',
+            'User question: ', question, '\\n\\n',
+            'Cost recommendations (JSON):\\n',
+            (SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT(*)))) FROM "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS"),
+            '\\n\\n',
+            'Latest metrics samples (JSON):\\n',
+            (SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT('resource_id', resource_id, 'metric_name', metric_name, 'payload', payload))))
+             FROM "{db}"."{names.schema_metrics}"."CLEAN"
+             QUALIFY ROW_NUMBER() OVER (PARTITION BY resource_id, metric_name ORDER BY ingested_at DESC) = 1),
+            '\\n\\n',
+            'Latest Terraform resolved resources (JSON):\\n',
+            (SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(payload)))
+             FROM "{db}"."{names.schema_terraform}"."CLEAN"
+             QUALIFY ROW_NUMBER() OVER (PARTITION BY filename ORDER BY ingested_at DESC) = 1)
+          )
+        )::STRING;
+      END;
+    $$;
     """
     run_sql(settings, sql=sql)

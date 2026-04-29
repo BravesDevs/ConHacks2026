@@ -297,3 +297,33 @@ def run_sql(settings: Settings, *, sql: str) -> list[dict[str, Any]]:
             return results
         finally:
             pass
+
+
+def run_sql_with_context(settings: Settings, *, sql: str) -> list[dict[str, Any]]:
+    ctx = []
+    if settings.snowflake_role:
+        ctx.append(f'USE ROLE "{settings.snowflake_role}";')
+    if settings.snowflake_warehouse:
+        ctx.append(f'USE WAREHOUSE "{settings.snowflake_warehouse}";')
+    if settings.snowflake_database:
+        ctx.append(f'USE DATABASE "{settings.snowflake_database}";')
+    if settings.snowflake_schema_terraform and settings.snowflake_database:
+        ctx.append(
+            f'USE SCHEMA "{settings.snowflake_database}"."{settings.snowflake_schema_terraform}";'
+        )
+    prefix = "\n".join(ctx) + ("\n" if ctx else "")
+    return run_sql(settings, sql=prefix + sql)
+
+
+def run_sql_with_context_no_schema(
+    settings: Settings, *, sql: str
+) -> list[dict[str, Any]]:
+    ctx = []
+    if settings.snowflake_role:
+        ctx.append(f'USE ROLE "{settings.snowflake_role}";')
+    if settings.snowflake_warehouse:
+        ctx.append(f'USE WAREHOUSE "{settings.snowflake_warehouse}";')
+    if settings.snowflake_database:
+        ctx.append(f'USE DATABASE "{settings.snowflake_database}";')
+    prefix = "\n".join(ctx) + ("\n" if ctx else "")
+    return run_sql(settings, sql=prefix + sql)
