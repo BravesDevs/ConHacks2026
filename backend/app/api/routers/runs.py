@@ -13,8 +13,15 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 
 @router.get("/latest", response_model=RunOut)
-async def latest_run(repo: str = Query(...), db: AsyncSession = Depends(get_db)) -> RunOut:
-    res = await db.execute(select(OptimizationRun).where(OptimizationRun.repo == repo).order_by(desc(OptimizationRun.id)).limit(1))
+async def latest_run(
+    repo: str = Query(...), db: AsyncSession = Depends(get_db)
+) -> RunOut:
+    res = await db.execute(
+        select(OptimizationRun)
+        .where(OptimizationRun.repo == repo)
+        .order_by(desc(OptimizationRun.id))
+        .limit(1)
+    )
     run = res.scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="not_found")
@@ -37,6 +44,9 @@ async def list_runs(
     db: AsyncSession = Depends(get_db),
 ) -> list[RunOut]:
     res = await db.execute(
-        select(OptimizationRun).where(OptimizationRun.repo == repo).order_by(desc(OptimizationRun.id)).limit(limit)
+        select(OptimizationRun)
+        .where(OptimizationRun.repo == repo)
+        .order_by(desc(OptimizationRun.id))
+        .limit(limit)
     )
     return [RunOut.model_validate(r) for r in res.scalars().all()]

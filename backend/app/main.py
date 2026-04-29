@@ -29,10 +29,20 @@ def create_app() -> FastAPI:
         await ws.accept()
         repo = ws.query_params.get("repo", "")
         run_id = ws.query_params.get("run_id", "")
-        topics = {"terraform.updated", "run.queued", "run.running", "run.suggestion_ready", "run.pr_opened", "run.failed"}
+        topics = {
+            "terraform.updated",
+            "run.queued",
+            "run.running",
+            "run.suggestion_ready",
+            "run.pr_opened",
+            "run.failed",
+        }
         if repo:
-            topics = {t for t in topics if t.startswith("run.") or t == "terraform.updated"}
+            topics = {
+                t for t in topics if t.startswith("run.") or t == "terraform.updated"
+            }
         try:
+
             async def forward(topic: str) -> None:
                 async for msg in event_bus.subscribe(topic):
                     await ws.send_text(msg)

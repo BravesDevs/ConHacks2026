@@ -6,7 +6,9 @@ import hashlib
 from cryptography.fernet import Fernet
 
 
-def verify_github_signature(*, secret: str, body: bytes, signature_header: str | None) -> bool:
+def verify_github_signature(
+    *, secret: str, body: bytes, signature_header: str | None
+) -> bool:
     if not secret:
         return False
     if not signature_header:

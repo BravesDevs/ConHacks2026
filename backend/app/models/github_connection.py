@@ -19,7 +19,9 @@ class GitHubConnection(Base):
     encrypted_token: Mapped[str] = mapped_column(String(512), nullable=False)
     tracked_repos: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

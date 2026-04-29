@@ -14,7 +14,12 @@ from app.core.config import get_settings
 from app.core.security import decrypt_token, encrypt_token
 from app.db.session import get_db
 from app.models.github_connection import GitHubConnection
-from app.schemas.github import GitHubConnectionOut, OAuthCallbackOut, RevokeOut, TrackReposIn
+from app.schemas.github import (
+    GitHubConnectionOut,
+    OAuthCallbackOut,
+    RevokeOut,
+    TrackReposIn,
+)
 from app.services.events import event_bus
 
 
@@ -32,7 +37,10 @@ GITHUB_OAUTH_SCOPES = "repo read:user"
 async def auth() -> RedirectResponse:
     settings = get_settings()
     if not settings.github_client_id or not settings.github_redirect_uri:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="oauth_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="oauth_not_configured",
+        )
 
     state = secrets.token_urlsafe(24)
     qs = urlencode(
@@ -63,7 +71,10 @@ async def callback(
         or not settings.github_redirect_uri
         or not settings.github_token_encryption_key
     ):
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="oauth_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="oauth_not_configured",
+        )
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         token_res = await client.post(
@@ -82,7 +93,11 @@ async def callback(
         token_data = token_res.json()
         access_token = token_data.get("access_token")
         if not access_token:
-            detail = token_data.get("error_description") or token_data.get("error") or "oauth_exchange_failed"
+            detail = (
+                token_data.get("error_description")
+                or token_data.get("error")
+                or "oauth_exchange_failed"
+            )
             raise HTTPException(status_code=400, detail=detail)
 
         user_res = await client.get(
@@ -100,17 +115,23 @@ async def callback(
 
     encrypted = encrypt_token(access_token)
 
-    res = await db.execute(select(GitHubConnection).where(GitHubConnection.user_id == login))
+    res = await db.execute(
+        select(GitHubConnection).where(GitHubConnection.user_id == login)
+    )
     conn = res.scalar_one_or_none()
     if conn is None:
-        conn = GitHubConnection(user_id=login, encrypted_token=encrypted, tracked_repos=[])
+        conn = GitHubConnection(
+            user_id=login, encrypted_token=encrypted, tracked_repos=[]
+        )
         db.add(conn)
     else:
         conn.encrypted_token = encrypted
     await db.commit()
     await db.refresh(conn)
 
-    await event_bus.publish("github.connected", {"type": "github.connected", "user_id": login})
+    await event_bus.publish(
+        "github.connected", {"type": "github.connected", "user_id": login}
+    )
     return OAuthCallbackOut(user_id=login, tracked_repos=list(conn.tracked_repos or []))
 
 
@@ -120,7 +141,9 @@ async def track_repos(
     db: AsyncSession = Depends(get_db),
 ) -> GitHubConnectionOut:
     # auth: open for MVP; gate behind a bearer or session token once user auth lands.
-    res = await db.execute(select(GitHubConnection).where(GitHubConnection.user_id == body.user_id))
+    res = await db.execute(
+        select(GitHubConnection).where(GitHubConnection.user_id == body.user_id)
+    )
     conn = res.scalar_one_or_none()
     if conn is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
@@ -131,7 +154,11 @@ async def track_repos(
 
     await event_bus.publish(
         "github.repos.tracked",
-        {"type": "github.repos.tracked", "user_id": body.user_id, "repos": list(conn.tracked_repos)},
+        {
+            "type": "github.repos.tracked",
+            "user_id": body.user_id,
+            "repos": list(conn.tracked_repos),
+        },
     )
     return GitHubConnectionOut.model_validate(conn)
 
@@ -144,9 +171,14 @@ async def revoke_connection(
     # auth: open for MVP; gate behind a bearer or session token once user auth lands.
     settings = get_settings()
     if not settings.github_client_id or not settings.github_client_secret:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="oauth_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="oauth_not_configured",
+        )
 
-    res = await db.execute(select(GitHubConnection).where(GitHubConnection.user_id == user_id))
+    res = await db.execute(
+        select(GitHubConnection).where(GitHubConnection.user_id == user_id)
+    )
     conn = res.scalar_one_or_none()
     if conn is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
@@ -178,6 +210,10 @@ async def revoke_connection(
 
     await event_bus.publish(
         "github.disconnected",
-        {"type": "github.disconnected", "user_id": user_id, "revoked_at_github": revoked_at_github},
+        {
+            "type": "github.disconnected",
+            "user_id": user_id,
+            "revoked_at_github": revoked_at_github,
+        },
     )
     return RevokeOut(user_id=user_id, deleted=True, revoked_at_github=revoked_at_github)

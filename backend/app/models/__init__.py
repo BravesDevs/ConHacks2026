@@ -4,4 +4,10 @@ from app.models.optimization_run import OptimizationRun
 from app.models.terraform_snapshot import TerraformSnapshot
 from app.models.webhook_delivery import WebhookDelivery
 
-__all__ = ["GitHubConnection", "MetricsSnapshot", "OptimizationRun", "TerraformSnapshot", "WebhookDelivery"]
+__all__ = [
+    "GitHubConnection",
+    "MetricsSnapshot",
+    "OptimizationRun",
+    "TerraformSnapshot",
+    "WebhookDelivery",
+]

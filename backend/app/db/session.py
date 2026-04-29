@@ -20,7 +20,11 @@ def _to_async_url(url: str) -> str:
 settings = get_settings()
 DATABASE_URL = settings.database_url
 
-engine = create_async_engine(_to_async_url(DATABASE_URL), echo=False) if DATABASE_URL else None
+engine = (
+    create_async_engine(_to_async_url(DATABASE_URL), echo=False)
+    if DATABASE_URL
+    else None
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False) if engine else None
 
 

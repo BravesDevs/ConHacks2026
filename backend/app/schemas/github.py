@@ -14,7 +14,9 @@ class TrackReposIn(BaseModel):
     def _validate_repos(cls, v: list[str]) -> list[str]:
         for repo in v:
             if "/" not in repo or any(c.isspace() for c in repo) or len(repo) > 140:
-                raise ValueError(f"invalid repo: {repo!r} (expected 'owner/repo', no whitespace, len <= 140)")
+                raise ValueError(
+                    f"invalid repo: {repo!r} (expected 'owner/repo', no whitespace, len <= 140)"
+                )
         return v
 
 

@@ -16,4 +16,6 @@ class TerraformSnapshot(Base):
     sha: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     paths: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

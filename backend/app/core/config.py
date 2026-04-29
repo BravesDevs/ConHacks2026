@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        # repo-root (.env sits next to backend/, frontend/, terraform/)
+        env_file=str(Path(__file__).resolve().parents[3] / ".env"),
+        extra="ignore",
+    )
 
     app_env: str = "local"
     cors_origins: str = ""
@@ -24,6 +30,25 @@ class Settings(BaseSettings):
     github_token_encryption_key: str = ""
 
     scheduler_enabled: bool = True
+
+    snowflake_account: str = ""
+    snowflake_user: str = ""
+    snowflake_password: str = ""
+    snowflake_token: str = ""
+    snowflake_role: str = ""
+    snowflake_warehouse: str = ""
+    snowflake_database: str = ""
+    snowflake_schema_core: str = "CORE"
+    snowflake_schema_metrics: str = "METRICS"
+    snowflake_schema_resources: str = "RESOURCES"
+    snowflake_schema_terraform: str = "TERRAFORM_CONFIG"
+    snowflake_schema_cost: str = "COST"
+
+    snowflake_stage_landing: str = "LANDING_STAGE"
+    snowflake_integration_user: str = ""
+    snowflake_integration_user_password: str = ""
+
+    digitalocean_token: str = ""
 
 
 @lru_cache
