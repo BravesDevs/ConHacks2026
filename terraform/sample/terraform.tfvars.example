@@ -1,0 +1,6 @@
+do_token       = "dop_v1_..."
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... you@host"
+
+project_name = "conhacks"
+environment  = "dev"
+region       = "nyc3"
