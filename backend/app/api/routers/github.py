@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import secrets
 from urllib.parse import urlencode
 
 import httpx
 from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +37,7 @@ GITHUB_USER_URL = "https://api.github.com/user"
 GITHUB_USER_REPOS_URL = "https://api.github.com/users/{username}/repos"
 GITHUB_REVOKE_GRANT_URL = "https://api.github.com/applications/{client_id}/grant"
 GITHUB_TREE_URL = "https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}"
+GITHUB_CONTENTS_URL = "https://api.github.com/repos/{owner}/{repo}/contents/{path}"
 GITHUB_OAUTH_SCOPES = "repo read:user"
 
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -305,3 +308,55 @@ async def get_repo_tree(
 
     entries = data.get("tree") or []
     return TreeNode.model_validate(_build_tree(entries, repo))
+
+
+@router.get("/repos/{owner}/{repo}/files/{path:path}", response_class=PlainTextResponse)
+async def get_repo_file(
+    owner: str,
+    repo: str,
+    path: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> PlainTextResponse:
+    access_token = creds.credentials
+    if not access_token:
+        raise HTTPException(status_code=401, detail="missing_access_token")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.get(
+            GITHUB_CONTENTS_URL.format(owner=owner, repo=repo, path=path),
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {access_token}",
+            },
+        )
+
+    if res.status_code == 404:
+        raise HTTPException(status_code=404, detail="file_not_found")
+    if res.status_code == 401:
+        raise HTTPException(status_code=401, detail="github_unauthorized")
+    if res.status_code == 403:
+        raise HTTPException(status_code=403, detail="github_forbidden")
+    if res.status_code != 200:
+        raise HTTPException(status_code=502, detail="github_contents_fetch_failed")
+
+    payload = res.json()
+    if isinstance(payload, list) or payload.get("type") != "file":
+        raise HTTPException(status_code=400, detail="path_is_not_a_file")
+
+    encoding = payload.get("encoding")
+    content_b64 = payload.get("content")
+    if encoding != "base64" or not content_b64:
+        # Files >1MB return empty content per the Contents API; caller should use the blob endpoint.
+        raise HTTPException(status_code=413, detail="file_too_large_or_unsupported_encoding")
+
+    try:
+        raw = base64.b64decode(content_b64, validate=False)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=502, detail="github_content_decode_failed")
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+
+    return PlainTextResponse(content=text)
