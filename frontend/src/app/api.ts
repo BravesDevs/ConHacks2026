@@ -1,6 +1,6 @@
 import type { AnalysisResult, ScanConfig } from './types';
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000';
+const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export async function fetchAnalysis(_config: ScanConfig): Promise<AnalysisResult> {
   const res = await fetch(`${BASE_URL}/api/recommendations`);
@@ -17,6 +17,15 @@ export async function sendChatMessage(message: string): Promise<string> {
   if (!res.ok) throw new Error(`chat failed: ${res.status}`);
   const data = await res.json();
   return data.answer ?? '';
+}
+
+export async function runPipeline(): Promise<{ runId: string; steps: string[]; errors: string[]; completedAt: string }> {
+  const res = await fetch(`${BASE_URL}/api/pipeline/run`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`runPipeline failed: ${res.status} — ${body}`);
+  }
+  return res.json();
 }
 
 export async function approveRecommendation(

@@ -202,7 +202,10 @@ def ensure_suggestion_procs_and_tasks(settings: Settings) -> None:
             s.value:disk_info[0]:size:amount::NUMBER AS disk_size_gib,
             s.value:disk_info[0]:size:unit::STRING AS disk_unit,
             s.value AS payload
-          FROM "{db}"."{names.schema_cost}"."SIZES_RAW" r,
+          FROM (
+            SELECT payload FROM "{db}"."{names.schema_cost}"."SIZES_RAW"
+            ORDER BY ingested_at DESC LIMIT 1
+          ) r,
                LATERAL FLATTEN(input => r.payload:sizes) s
         ) src
         ON t.slug = src.slug

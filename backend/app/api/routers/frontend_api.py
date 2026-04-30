@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
+import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
 
 from app.core.config import get_settings
+from app.services.ingest_service import (
+    ingest_digitalocean_sizes,
+    ingest_metrics_json,
+    ingest_terraform_from_local,
+)
 from app.services.snowflake_service import SnowflakeNames, run_sql_with_context_no_schema
+
+_SAMPLE_PAYLOADS_DIR = Path(__file__).parent.parent.parent.parent / "sample_payloads"
 
 router = APIRouter(prefix="/api", tags=["frontend"])
 
@@ -74,34 +84,20 @@ def get_recommendations() -> dict[str, Any]:
         rows = run_sql_with_context_no_schema(
             settings,
             sql=f"""
-            WITH latest_recs AS (
-              SELECT resource_id, old_size, new_size, estimated_savings, created_at
+            WITH latest_ts AS (
+              SELECT MAX(created_at) AS max_ts
               FROM "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS"
-              QUALIFY ROW_NUMBER() OVER (PARTITION BY resource_id ORDER BY created_at DESC) = 1
+              WHERE resource_id IS NOT NULL AND resource_id <> ''
+                AND old_size IS NOT NULL AND old_size <> 'unknown'
             ),
-            latest_summaries AS (
-              SELECT resource_id, explanation
-              FROM "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
-              WHERE suggestion_type = 'recommendation_summary'
-              QUALIFY ROW_NUMBER() OVER (PARTITION BY resource_id ORDER BY created_at DESC) = 1
-            ),
-            latest_tf AS (
-              SELECT
-                payload:name::STRING AS tf_name,
-                payload:size_var::STRING AS size_var,
-                droplet_size,
-                region
-              FROM "{db}"."{names.schema_terraform}"."CLEAN"
-              QUALIFY ROW_NUMBER() OVER (PARTITION BY droplet_size ORDER BY ingested_at DESC) = 1
-            ),
-            latest_cpu AS (
-              SELECT
-                resource_id,
-                AVG(TRY_TO_NUMBER(v.value[1]::STRING, 38, 10)) AS avg_cpu
-              FROM "{db}"."{names.schema_metrics}"."CLEAN",
-                   LATERAL FLATTEN(input => metric_values) v
-              WHERE metric_name = 'idle'
-              GROUP BY resource_id
+            recs AS (
+              SELECT created_at, resource_id, old_size, new_size, estimated_savings
+              FROM "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS"
+              WHERE resource_id IS NOT NULL AND resource_id <> ''
+                AND old_size IS NOT NULL AND old_size <> 'unknown'
+                AND created_at >= DATEADD('minute', -5, (SELECT max_ts FROM latest_ts))
+              ORDER BY created_at DESC
+              LIMIT 50
             )
             SELECT
               r.resource_id,
@@ -112,22 +108,40 @@ def get_recommendations() -> dict[str, Any]:
               ns.price_monthly  AS new_price,
               s.explanation,
               t.region,
-              t.tf_name,
-              t.size_var,
+              t.payload:name::STRING       AS tf_name,
+              t.payload:size_var::STRING   AS size_var,
               (100 - COALESCE(c.avg_cpu, 100)) AS avg_cpu
-            FROM latest_recs r
+            FROM recs r
             LEFT JOIN "{db}"."{names.schema_cost}"."SIZES" os ON os.slug = r.old_size
             LEFT JOIN "{db}"."{names.schema_cost}"."SIZES" ns ON ns.slug = r.new_size
-            LEFT JOIN latest_summaries s ON s.resource_id = r.resource_id
-            LEFT JOIN latest_tf t ON t.droplet_size = r.old_size
-            LEFT JOIN latest_cpu c ON c.resource_id = r.resource_id
-            ORDER BY r.estimated_savings DESC NULLS LAST;
+            LEFT JOIN (
+              SELECT resource_id, explanation
+              FROM "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
+              WHERE suggestion_type = 'recommendation_summary'
+              QUALIFY ROW_NUMBER() OVER (PARTITION BY resource_id ORDER BY created_at DESC) = 1
+            ) s ON s.resource_id = r.resource_id
+            LEFT JOIN (
+              SELECT droplet_size, region, payload
+              FROM "{db}"."{names.schema_terraform}"."CLEAN"
+              QUALIFY ROW_NUMBER() OVER (PARTITION BY droplet_size ORDER BY ingested_at DESC) = 1
+            ) t ON t.droplet_size = r.old_size
+            LEFT JOIN (
+              SELECT resource_id,
+                     AVG(TRY_TO_NUMBER(v.value[1]::STRING, 38, 10)) AS avg_cpu
+              FROM "{db}"."{names.schema_metrics}"."CLEAN",
+                   LATERAL FLATTEN(input => metric_values) v
+              WHERE metric_name = 'idle'
+              GROUP BY resource_id
+            ) c ON c.resource_id = r.resource_id;
             """,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"snowflake_query_failed: {e}") from e
 
-    resources = [_map_row(r) for r in rows]
+    resources = [
+        _map_row(r) for r in rows
+        if r.get("RESOURCE_ID") and r.get("OLD_SIZE") not in (None, "unknown", "")
+    ]
     return {
         "scannedAt": datetime.utcnow().isoformat(),
         "resources": resources,
@@ -171,6 +185,133 @@ def chat(question: str = Body(..., embed=True)) -> dict[str, Any]:
         )
         answer = rows[0].get("ANSWER") if rows else "No answer available."
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"cortex_chat_failed: {e}") from e
+        err = str(e)
+        if "trial" in err.lower() or "not available" in err.lower():
+            answer = "The AI chat feature requires a full Snowflake account (Cortex COMPLETE is not available on trial). Your cost recommendations are still visible in the dashboard."
+        else:
+            raise HTTPException(status_code=502, detail=f"cortex_chat_failed: {e}") from e
 
     return {"answer": answer}
+
+
+@router.post("/pipeline/run")
+async def run_pipeline() -> dict[str, Any]:
+    settings = get_settings()
+    names = SnowflakeNames.from_settings(settings)
+    db = names.database
+    run_id = uuid.uuid4().hex
+    steps: list[str] = []
+
+    # 1. Ingest DO sizes
+    try:
+        await ingest_digitalocean_sizes(settings, filename=f"sizes_{run_id}.json")
+        steps.append("ingest_do_sizes: ok")
+    except Exception as e:
+        steps.append(f"ingest_do_sizes: skipped ({e})")
+
+    # 2. Ingest sample metric payloads
+    if _SAMPLE_PAYLOADS_DIR.is_dir():
+        for path in sorted(_SAMPLE_PAYLOADS_DIR.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text())
+                ingest_metrics_json(settings, payload=payload, filename=f"{path.stem}_{run_id}.json")
+                steps.append(f"ingest_metrics:{path.stem}: ok")
+            except Exception as e:
+                steps.append(f"ingest_metrics:{path.stem}: failed ({e})")
+    else:
+        steps.append("ingest_metrics: no sample_payloads dir found")
+
+    # 3. Ingest Terraform from local path (optional)
+    if settings.terraform_local_path:
+        try:
+            ingest_terraform_from_local(settings, run_id=run_id)
+            steps.append("ingest_terraform: ok")
+        except Exception as e:
+            steps.append(f"ingest_terraform: failed ({e})")
+    else:
+        steps.append("ingest_terraform: skipped (TERRAFORM_LOCAL_PATH not set)")
+
+    # 4-7. Run stored procedures in sequence
+    sp_calls = [
+        ("clean_metrics",    f'CALL "{db}"."{names.schema_metrics}"."SP_CLEAN_RAW"();'),
+        ("clean_terraform",  f'CALL "{db}"."{names.schema_terraform}"."SP_CLEAN_RAW"();'),
+        ("analyze_metrics",  f'CALL "{db}"."{names.schema_cost}"."SP_ANALYZE_METRICS"();'),
+        ("cortex_summarize", f'CALL "{db}"."{names.schema_terraform}"."SP_CORTEX_SUMMARIZE_RECOMMENDATIONS"();'),
+    ]
+    # Recreate SP_REFRESH_SIZES with the dedup fix before analyze runs
+    try:
+        run_sql_with_context_no_schema(
+            settings,
+            sql=f"""
+            CREATE OR REPLACE PROCEDURE "{db}"."{names.schema_cost}"."SP_REFRESH_SIZES"()
+            RETURNS STRING
+            LANGUAGE SQL
+            AS
+            $$
+              BEGIN
+                MERGE INTO "{db}"."{names.schema_cost}"."SIZES" t
+                USING (
+                  SELECT
+                    s.value:slug::STRING AS slug,
+                    s.value:available::BOOLEAN AS available,
+                    s.value:description::STRING AS description,
+                    s.value:disk::NUMBER AS disk_gb,
+                    s.value:transfer::NUMBER AS transfer_tb,
+                    s.value:vcpus::NUMBER AS vcpus,
+                    s.value:memory::NUMBER AS memory_mb,
+                    s.value:networking_throughput::NUMBER AS networking_throughput,
+                    s.value:price_hourly::NUMBER AS price_hourly,
+                    s.value:price_monthly::NUMBER AS price_monthly,
+                    s.value:disk_info[0]:type::STRING AS disk_type,
+                    s.value:disk_info[0]:size:amount::NUMBER AS disk_size_gib,
+                    s.value:disk_info[0]:size:unit::STRING AS disk_unit,
+                    s.value AS payload
+                  FROM (
+                    SELECT payload FROM "{db}"."{names.schema_cost}"."SIZES_RAW"
+                    ORDER BY ingested_at DESC LIMIT 1
+                  ) r,
+                  LATERAL FLATTEN(input => r.payload:sizes) s
+                ) src
+                ON t.slug = src.slug
+                WHEN MATCHED THEN UPDATE SET
+                  available = src.available, description = src.description,
+                  disk_gb = src.disk_gb, transfer_tb = src.transfer_tb,
+                  vcpus = src.vcpus, memory_mb = src.memory_mb,
+                  networking_throughput = src.networking_throughput,
+                  price_hourly = src.price_hourly, price_monthly = src.price_monthly,
+                  disk_type = src.disk_type, disk_size_gib = src.disk_size_gib,
+                  disk_unit = src.disk_unit, payload = src.payload
+                WHEN NOT MATCHED THEN INSERT (
+                  slug, available, description, disk_gb, transfer_tb, vcpus, memory_mb,
+                  networking_throughput, price_hourly, price_monthly,
+                  disk_type, disk_size_gib, disk_unit, payload
+                ) VALUES (
+                  src.slug, src.available, src.description, src.disk_gb, src.transfer_tb,
+                  src.vcpus, src.memory_mb, src.networking_throughput,
+                  src.price_hourly, src.price_monthly,
+                  src.disk_type, src.disk_size_gib, src.disk_unit, src.payload
+                );
+                RETURN 'ok';
+              END;
+            $$;
+            """,
+        )
+        steps.append("recreate_sp_refresh_sizes: ok")
+    except Exception as e:
+        steps.append(f"recreate_sp_refresh_sizes: failed ({e})")
+
+    errors: list[str] = []
+    for sp_name, sql in sp_calls:
+        try:
+            run_sql_with_context_no_schema(settings, sql=sql)
+            steps.append(f"{sp_name}: ok")
+        except Exception as e:
+            steps.append(f"{sp_name}: failed ({e})")
+            errors.append(f"{sp_name}: {e}")
+
+    return {
+        "runId": run_id,
+        "steps": steps,
+        "errors": errors,
+        "completedAt": datetime.utcnow().isoformat(),
+    }

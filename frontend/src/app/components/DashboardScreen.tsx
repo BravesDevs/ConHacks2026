@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   FileCode2,
@@ -33,7 +33,9 @@ import type {
   TimeRange,
   ScanConfig,
 } from '../types';
-import { analysisResult, MONTH_LABELS_12 } from '../mockData';
+import { MONTH_LABELS_12 } from '../mockData';
+import { fetchAnalysis, runPipeline } from '../api';
+import type { AnalysisResult } from '../types';
 import RecommendationCard from './RecommendationCard';
 import TerraformDiff from './TerraformDiff';
 
@@ -97,12 +99,47 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   const [providerFilter, setProviderFilter] = useState<'All' | Provider>('All');
   const [typeFilter, setTypeFilter] = useState<'All' | ResourceType>('All');
   const [query, setQuery] = useState('');
-  const [selectedResourceId, setSelectedResourceId] = useState(analysisResult.resources[0].id);
+  const [selectedResourceId, setSelectedResourceId] = useState('');
   const [chartType, setChartType] = useState<ChartType>('area');
   const [timeRange, setTimeRange] = useState<TimeRange>('6M');
   const [recFilter, setRecFilter] = useState<RecFilter>('all');
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [pipelineRunning, setPipelineRunning] = useState(false);
 
-  const allResources = analysisResult.resources;
+  useEffect(() => {
+    fetchAnalysis(config)
+      .then(result => {
+        setAnalysisResult(result);
+        if (result.resources.length > 0) setSelectedResourceId(result.resources[0].id);
+      })
+      .catch(err => {
+        console.error('fetchAnalysis failed:', err);
+        setFetchError(String(err));
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  function handleRunPipeline() {
+    setPipelineRunning(true);
+    setFetchError(null);
+    runPipeline()
+      .then(pipelineResult => {
+        if (pipelineResult.errors?.length) {
+          setFetchError(`Pipeline errors: ${pipelineResult.errors.join(' | ')}`);
+        }
+        return fetchAnalysis(config);
+      })
+      .then(result => {
+        setAnalysisResult(result);
+        if (result.resources.length > 0) setSelectedResourceId(result.resources[0].id);
+      })
+      .catch(err => setFetchError(String(err)))
+      .finally(() => setPipelineRunning(false));
+  }
+
+  const allResources = analysisResult?.resources ?? [];
 
   const filteredResources = useMemo(() => {
     return allResources.filter(r => {
@@ -629,6 +666,22 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   );
 
   // ── Main render ──────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex min-h-[calc(100vh-56px)] items-center justify-center">
+        <span className="font-['IBM_Plex_Mono'] text-sm text-white/40">Loading recommendations...</span>
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="flex min-h-[calc(100vh-56px)] items-center justify-center">
+        <span className="font-['IBM_Plex_Mono'] text-sm text-red-400">Error: {fetchError}</span>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-[calc(100vh-56px)]">
       <div className="flex h-full">
@@ -679,6 +732,18 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
             {/* Footer */}
             <div className="mt-4 space-y-2 border-t border-white/05 pt-4">
               <button
+                onClick={handleRunPipeline}
+                disabled={pipelineRunning}
+                className={`flex w-full items-center gap-2 border px-3 py-2 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${
+                  pipelineRunning
+                    ? 'border-[#f97316]/30 text-[#f97316]/50 cursor-not-allowed'
+                    : 'border-[#f97316]/40 text-[#f97316]/70 hover:border-[#f97316]/70 hover:text-[#f97316]'
+                }`}
+              >
+                <Sparkles className={`h-3 w-3 ${pipelineRunning ? 'animate-pulse' : ''}`} />
+                {pipelineRunning ? 'RUNNING...' : 'RUN ANALYSIS'}
+              </button>
+              <button
                 onClick={onRescan}
                 className="flex w-full items-center gap-2 border border-white/08 px-3 py-2 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] text-white/30 transition-colors hover:border-white/16 hover:text-white/60"
               >
@@ -686,7 +751,7 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                 RE-SCAN
               </button>
               <div className="px-1 font-['IBM_Plex_Mono'] text-[10px] text-white/15">
-                Scanned {new Date(analysisResult.scannedAt).toLocaleTimeString()}
+                Scanned {analysisResult ? new Date(analysisResult.scannedAt).toLocaleTimeString() : '—'}
               </div>
             </div>
           </div>
