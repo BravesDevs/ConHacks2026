@@ -68,13 +68,19 @@ export default function AiChat({ open, onOpenChange }: AiChatProps) {
 
     try {
       const reply = await sendChatMessage(text);
-      const assistantMsg: ChatMessage = {
+      setMessages((prev) => [...prev, {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: reply,
         timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      }]);
+    } catch {
+      setMessages((prev) => [...prev, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Something went wrong. Please try again.',
+        timestamp: new Date(),
+      }]);
     } finally {
       setLoading(false);
     }

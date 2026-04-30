@@ -11,9 +11,17 @@ export async function fetchAnalysis(_config: ScanConfig): Promise<AnalysisResult
 }
 
 export async function sendChatMessage(message: string): Promise<string> {
-  // TODO: replace with Cortex AI API call
-  await delay(800);
-  return 'I am analysing your infrastructure. Cortex AI integration coming soon.';
+  const res = await fetch('/api/snowflake/v2/cortex/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer Lorem-proident-sint-et',
+    },
+    body: JSON.stringify({ question: message }),
+  });
+  if (!res.ok) throw new Error(`Chat error: ${res.status}`);
+  const data = await res.json();
+  return data.answer ?? 'No response from Cortex.';
 }
 
 export async function approveRecommendation(
