@@ -68,13 +68,19 @@ export default function AiChat({ open, onOpenChange }: AiChatProps) {
 
     try {
       const reply = await sendChatMessage(text);
-      const assistantMsg: ChatMessage = {
+      setMessages((prev) => [...prev, {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: reply,
         timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      }]);
+    } catch {
+      setMessages((prev) => [...prev, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Something went wrong. Please try again.',
+        timestamp: new Date(),
+      }]);
     } finally {
       setLoading(false);
     }
@@ -103,7 +109,7 @@ export default function AiChat({ open, onOpenChange }: AiChatProps) {
               AI ASSISTANT
             </span>
             <span className="mt-0.5 font-['IBM_Plex_Mono'] text-[10px] text-[#f97316]/70">
-              POWERED BY CORTEX AI
+              POWERED BY DigitalOcean Open AI
             </span>
           </div>
         </div>

@@ -54,6 +54,7 @@ export interface ScanConfig {
   doApiKey: string;
   doProject?: string;
   regionFilter?: string;
+  phoneNumber?: string;
 }
 
 export interface AnalysisResult {

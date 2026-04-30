@@ -92,6 +92,8 @@ def ensure_snowflake_setup(settings: Settings) -> None:
     with _connect_admin(settings) as conn:
         cur = conn.cursor()
         try:
+            # Ensure all DEFAULT CURRENT_TIMESTAMP() values land in UTC.
+            cur.execute("ALTER SESSION SET TIMEZONE = 'UTC';")
             _exec_many(
                 cur,
                 [
@@ -290,7 +292,7 @@ def run_sql(settings: Settings, *, sql: str) -> list[dict[str, Any]]:
                     rows = cur.fetchall() if cur.description else []
                 except Exception:
                     cols, rows = [], []
-                if cols and rows:
+                if cols and rows and not (len(cols) == 1 and cols[0].lower() == "status"):
                     for r in rows:
                         results.append({cols[i]: r[i] for i in range(len(cols))})
             return results

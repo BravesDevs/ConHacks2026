@@ -25,6 +25,7 @@ async def chat_complete(
         "model": DO_AI_MODEL,
         "messages": messages,
         "max_tokens": max_tokens,
+        "stop": ["<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>", "<|end_of_text|>"],
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -47,4 +48,12 @@ async def chat_complete(
     content = msg.get("content")
     if not isinstance(content, str):
         raise RuntimeError(f"DigitalOcean AI returned invalid content: {data}")
-    return content
+    # Defensive scrub: some models leak chat template tokens past stop sequences.
+    for tok in (
+        "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>",
+        "<|end_of_text|>", "<|begin_of_text|>",
+    ):
+        idx = content.find(tok)
+        if idx != -1:
+            content = content[:idx]
+    return content.strip()

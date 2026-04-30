@@ -16,6 +16,7 @@ from app.api.routers.snowflake_v2 import (
     workflows_router as snowflake_v2_workflows_router,
 )
 from app.api.routers.jobs_snowflake import router as snowflake_v2_jobs_router
+from app.api.routers.voice import router as voice_router
 from app.api.routers.webhooks import router as webhooks_router
 
 
@@ -33,3 +34,4 @@ api_router.include_router(snowflake_v2_workflows_router)
 api_router.include_router(snowflake_v2_recommendations_router)
 api_router.include_router(snowflake_v2_cortex_router)
 api_router.include_router(snowflake_v2_jobs_router)
+api_router.include_router(voice_router)

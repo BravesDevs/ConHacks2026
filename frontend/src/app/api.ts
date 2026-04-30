@@ -264,3 +264,61 @@ export async function approveRecommendation(
   const data = await res.json();
   return { prUrl: data.pr_url };
 }
+
+const API_BASE: string =
+  (import.meta as any).env?.VITE_API_BASE_URL ?? 'http://localhost:8000';
+
+interface CortexSummaryRow {
+  RESOURCE_ID?: string;
+  EXPLANATION?: string;
+  resource_id?: string;
+  explanation?: string;
+}
+
+const DEMO_SAVINGS_SUMMARY =
+  'We found a cost savings opportunity in your cloud setup.';
+
+export async function fetchSavingsSummary(): Promise<string> {
+  try {
+    const result = await fetchAnalysis({} as ScanConfig);
+    const sorted = [...result.resources].sort(
+      (a, b) => (b.currentCost - b.optimizedCost) - (a.currentCost - a.optimizedCost)
+    );
+    const top = sorted[0];
+    if (!top) return DEMO_SAVINGS_SUMMARY;
+
+    const saved = Math.round(top.currentCost - top.optimizedCost);
+    const reason = top.recommendation?.trim() || `downsize ${top.name}`;
+    return `${reason} (about ${saved} dollars per month).`;
+  } catch (err) {
+    console.warn('fetchSavingsSummary fell back to demo:', err);
+    return DEMO_SAVINGS_SUMMARY;
+  }
+}
+
+export async function triggerSavingsCall(args: {
+  phoneNumber: string;
+  summary: string;
+  customerName?: string;
+  githubToken?: string;
+  repoUrl?: string;
+  branch?: string;
+}): Promise<{ call_id: string; call_sid: string }> {
+  const res = await fetch(`${API_BASE}/voice/call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone_number: args.phoneNumber,
+      savings_summary: args.summary,
+      customer_name: args.customerName,
+      github_token: args.githubToken,
+      repo_url: args.repoUrl,
+      branch: args.branch,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`call failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}

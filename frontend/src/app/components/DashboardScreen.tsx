@@ -1,3 +1,6 @@
+import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { fetchSavingsSummary, triggerSavingsCall } from '../api';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
@@ -69,16 +72,16 @@ const TYPE_COLORS: Record<string, string> = {
 
 const SEVERITY_DOT: Record<string, string> = {
   critical: 'bg-[#f87171]',
-  high:     'bg-[#fbbf24]',
-  medium:   'bg-[#f97316]',
-  low:      'bg-[#34d399]',
+  high: 'bg-[#fbbf24]',
+  medium: 'bg-[#f97316]',
+  low: 'bg-[#34d399]',
 };
 
 const NAV_ITEMS: { id: DashboardTab; label: string; icon: React.ElementType }[] = [
-  { id: 'overview',        label: 'OVERVIEW',        icon: BarChart3 },
-  { id: 'resources',       label: 'RESOURCES',       icon: Server },
+  { id: 'overview', label: 'OVERVIEW', icon: BarChart3 },
+  { id: 'resources', label: 'RESOURCES', icon: Server },
   { id: 'recommendations', label: 'RECOMMENDATIONS', icon: Sparkles },
-  { id: 'terraform',       label: 'TERRAFORM',       icon: FileCode2 },
+  { id: 'terraform', label: 'TERRAFORM', icon: FileCode2 },
 ];
 
 function DarkTooltip({ active, payload, label }: { active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string }) {
@@ -109,9 +112,7 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [pipelinePhase, setPipelinePhase] = useState<PipelinePhase>('idle');
-  const [pipelinePrUrl, setPipelinePrUrl] = useState<string | null>(null);
-  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [pipelineRunning, setPipelineRunning] = useState(false);
 
   useEffect(() => {
     fetchAnalysis(config)
@@ -257,8 +258,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
         <ResponsiveContainer width="100%" height={240}>
           <BarChart {...chartProps}>
             {axis}
-            <Bar dataKey="Current" fill="#f97316" fillOpacity={0.7} radius={[2,2,0,0]} />
-            <Bar dataKey="Optimized" fill="#34d399" fillOpacity={0.7} radius={[2,2,0,0]} />
+            <Bar dataKey="Current" fill="#f97316" fillOpacity={0.7} radius={[2, 2, 0, 0]} />
+            <Bar dataKey="Optimized" fill="#34d399" fillOpacity={0.7} radius={[2, 2, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       );
@@ -344,9 +345,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                 <button
                   key={t}
                   onClick={() => setChartType(t)}
-                  className={`px-3 py-1.5 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${
-                    chartType === t ? 'bg-[#f97316]/15 text-[#f97316]' : 'text-white/25 hover:text-white/50'
-                  }`}
+                  className={`px-3 py-1.5 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${chartType === t ? 'bg-[#f97316]/15 text-[#f97316]' : 'text-white/25 hover:text-white/50'
+                    }`}
                 >
                   {t.toUpperCase()}
                 </button>
@@ -358,9 +358,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                 <button
                   key={r}
                   onClick={() => setTimeRange(r)}
-                  className={`px-3 py-1.5 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${
-                    timeRange === r ? 'bg-[#f97316]/15 text-[#f97316]' : 'text-white/25 hover:text-white/50'
-                  }`}
+                  className={`px-3 py-1.5 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${timeRange === r ? 'bg-[#f97316]/15 text-[#f97316]' : 'text-white/25 hover:text-white/50'
+                    }`}
                 >
                   {r}
                 </button>
@@ -466,9 +465,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
               <button
                 key={r.id}
                 onClick={() => setSelectedResourceId(r.id)}
-                className={`grid w-full gap-3 border-b border-white/04 px-5 py-3 text-left transition-all lg:grid-cols-[minmax(0,1.8fr)_120px_90px_90px_80px_32px] ${
-                  isSelected ? 'border-l-2 border-l-[#f97316]/60 bg-[#f97316]/04' : 'hover:bg-white/[0.02]'
-                }`}
+                className={`grid w-full gap-3 border-b border-white/04 px-5 py-3 text-left transition-all lg:grid-cols-[minmax(0,1.8fr)_120px_90px_90px_80px_32px] ${isSelected ? 'border-l-2 border-l-[#f97316]/60 bg-[#f97316]/04' : 'hover:bg-white/[0.02]'
+                  }`}
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div
@@ -637,11 +635,10 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
           <button
             key={f.id}
             onClick={() => setRecFilter(f.id)}
-            className={`border px-4 py-1.5 font-['Chakra_Petch'] text-[10px] tracking-[0.12em] transition-colors ${
-              recFilter === f.id
+            className={`border px-4 py-1.5 font-['Chakra_Petch'] text-[10px] tracking-[0.12em] transition-colors ${recFilter === f.id
                 ? 'border-[#f97316]/50 bg-[#f97316]/10 text-[#f97316]'
                 : 'border-white/08 text-white/30 hover:text-white/60'
-            }`}
+              }`}
           >
             {f.label}
             <span className="ml-2 font-['IBM_Plex_Mono'] opacity-50">
@@ -754,11 +751,10 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
-                  className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
-                    activeTab === item.id
+                  className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${activeTab === item.id
                       ? 'border-l-2 border-[#f97316] bg-[#f97316]/08 text-[#f97316]'
                       : 'border-l-2 border-transparent text-white/30 hover:text-white/60'
-                  }`}
+                    }`}
                 >
                   <item.icon className="h-3.5 w-3.5 flex-shrink-0" />
                   <span className="font-['Chakra_Petch'] text-[11px] tracking-[0.1em]">{item.label}</span>
@@ -771,16 +767,15 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
               <button
                 onClick={handleRunPipeline}
                 disabled={pipelineRunning}
-                className={`flex w-full items-center gap-2 border px-3 py-2 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${
-                  pipelineRunning
+                className={`flex w-full items-center gap-2 border px-3 py-2 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${pipelineRunning
                     ? 'border-[#f97316]/30 text-[#f97316]/50 cursor-not-allowed'
                     : 'border-[#f97316]/40 text-[#f97316]/70 hover:border-[#f97316]/70 hover:text-[#f97316]'
-                }`}
+                  }`}
               >
                 <Sparkles className={`h-3 w-3 ${pipelineRunning ? 'animate-pulse' : ''}`} />
-                {pipelinePhase === 'running'     ? 'RUNNING...' :
-                 pipelinePhase === 'creating-pr' ? 'CREATING PR...' :
-                 'RUN PIPELINE'}
+                {pipelinePhase === 'running' ? 'RUNNING...' :
+                  pipelinePhase === 'creating-pr' ? 'CREATING PR...' :
+                    'RUN PIPELINE'}
               </button>
               {pipelinePrUrl && (
                 <a
@@ -824,11 +819,10 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                   <button
                     key={p}
                     onClick={() => setProviderFilter(p)}
-                    className={`border px-2.5 py-1 font-['Chakra_Petch'] text-[10px] tracking-[0.08em] transition-colors ${
-                      providerFilter === p
+                    className={`border px-2.5 py-1 font-['Chakra_Petch'] text-[10px] tracking-[0.08em] transition-colors ${providerFilter === p
                         ? 'border-[#f97316]/50 bg-[#f97316]/10 text-[#f97316]'
                         : 'border-white/08 text-white/30 hover:text-white/60'
-                    }`}
+                      }`}
                   >
                     {p === 'DigitalOcean' ? 'DO' : p.toUpperCase()}
                   </button>
@@ -843,11 +837,10 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                   <button
                     key={t}
                     onClick={() => setTypeFilter(t)}
-                    className={`border px-2.5 py-1 font-['Chakra_Petch'] text-[10px] tracking-[0.08em] transition-colors ${
-                      typeFilter === t
+                    className={`border px-2.5 py-1 font-['Chakra_Petch'] text-[10px] tracking-[0.08em] transition-colors ${typeFilter === t
                         ? 'border-[#22d3ee]/50 bg-[#22d3ee]/10 text-[#22d3ee]'
                         : 'border-white/08 text-white/30 hover:text-white/60'
-                    }`}
+                      }`}
                   >
                     {t.toUpperCase()}
                   </button>
@@ -868,10 +861,10 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
 
           {/* Tab content */}
           <div className="p-6">
-            {activeTab === 'overview'        && <OverviewContent />}
-            {activeTab === 'resources'       && <ResourcesContent />}
+            {activeTab === 'overview' && <OverviewContent />}
+            {activeTab === 'resources' && <ResourcesContent />}
             {activeTab === 'recommendations' && <RecommendationsContent />}
-            {activeTab === 'terraform'       && <TerraformContent />}
+            {activeTab === 'terraform' && <TerraformContent />}
           </div>
         </main>
       </div>

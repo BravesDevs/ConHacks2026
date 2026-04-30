@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, EyeOff, ArrowRight, Github, Lock, Server } from 'lucide-react';
+import { Eye, EyeOff, ArrowRight, Github, Lock, Server, Phone } from 'lucide-react';
 import type { ScanConfig } from '../types';
 
 interface ConnectScreenProps {
@@ -81,7 +81,11 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
   const set = (key: keyof ScanConfig) => (v: string) => onChange({ ...config, [key]: v });
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const canAnalyze = config.githubToken.trim() && config.repoUrl.trim() && config.doApiKey.trim();
+  const canAnalyze =
+    config.githubToken.trim() &&
+    config.repoUrl.trim() &&
+    config.doApiKey.trim() &&
+    (config.phoneNumber ?? '').trim();
 
   return (
     <div className="flex min-h-[calc(100vh-56px)] items-center justify-center px-6 py-12">
@@ -149,6 +153,24 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
               />
             </div>
 
+            <div className="h-px bg-white/15" />
+
+            {/* Notifications section */}
+            <div>
+              <div className="mb-4 flex items-center gap-2.5">
+                <Phone className="h-4 w-4 text-white/60" />
+                <span className="font-['Chakra_Petch'] text-[11px] font-600 tracking-[0.16em] text-white/90">NOTIFICATIONS</span>
+                <div className="h-px flex-1 bg-white/15" />
+              </div>
+              <TextField
+                label="PHONE NUMBER"
+                hint="(E.164 format)"
+                value={config.phoneNumber ?? ''}
+                onChange={set('phoneNumber')}
+                placeholder="+15551234567"
+              />
+            </div>
+
             {/* Advanced / optional */}
             <button
               type="button"
@@ -192,7 +214,7 @@ export default function ConnectScreen({ config, onChange, onAnalyze }: ConnectSc
         <div className="mt-8 flex items-center justify-between">
           <button
             type="button"
-            onClick={() => onChange({ githubToken: '', repoUrl: '', branch: 'main', doApiKey: '', doProject: '', regionFilter: '' })}
+            onClick={() => onChange({ githubToken: '', repoUrl: '', branch: 'main', doApiKey: '', doProject: '', regionFilter: '', phoneNumber: '' })}
             className="font-['Chakra_Petch'] text-[11px] tracking-[0.12em] text-white/60 hover:text-white/50 transition-colors"
           >
             CLEAR FIELDS
