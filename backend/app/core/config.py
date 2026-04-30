@@ -53,6 +53,16 @@ class Settings(BaseSettings):
 
     terraform_local_path: str = ""
 
+    elevenlabs_api_key: str = ""
+    elevenlabs_agent_id: str = ""
+    elevenlabs_agent_phone_number_id: str = ""
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    public_base_url: str = ""
+    call_security_code: str = "1234"
+    customer_phone_number: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

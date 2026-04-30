@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { fetchSavingsSummary, triggerSavingsCall } from '../api';
 import {
   BarChart3,
   FileCode2,
@@ -101,6 +103,30 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   const [chartType, setChartType] = useState<ChartType>('area');
   const [timeRange, setTimeRange] = useState<TimeRange>('6M');
   const [recFilter, setRecFilter] = useState<RecFilter>('all');
+
+  useEffect(() => {
+    const handler = async (e: KeyboardEvent) => {
+      const isCallShortcut =
+        (e.metaKey || e.ctrlKey) && e.shiftKey && e.key === '0';
+      if (!isCallShortcut) return;
+      e.preventDefault();
+      const phone = (config.phoneNumber ?? '').trim();
+      if (!phone) {
+        toast.error('No phone number on file. Add one in Connect.');
+        return;
+      }
+      const t = toast.loading(`Calling ${phone}...`);
+      try {
+        const summary = await fetchSavingsSummary();
+        const res = await triggerSavingsCall({ phoneNumber: phone, summary });
+        toast.success(`Call placed (sid ${res.call_sid.slice(0, 8)}...)`, { id: t });
+      } catch (err) {
+        toast.error(`Call failed: ${(err as Error).message}`, { id: t });
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [config.phoneNumber]);
 
   const allResources = analysisResult.resources;
 

@@ -11,3 +11,4 @@ websockets
 cryptography
 snowflake-connector-python
 python-hcl2
+twilio
