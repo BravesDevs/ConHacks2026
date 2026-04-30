@@ -187,26 +187,32 @@ def ensure_suggestion_procs_and_tasks(settings: Settings) -> None:
       BEGIN
         MERGE INTO "{db}"."{names.schema_cost}"."SIZES" t
         USING (
-          SELECT
-            s.value:slug::STRING AS slug,
-            s.value:available::BOOLEAN AS available,
-            s.value:description::STRING AS description,
-            s.value:disk::NUMBER AS disk_gb,
-            s.value:transfer::NUMBER AS transfer_tb,
-            s.value:vcpus::NUMBER AS vcpus,
-            s.value:memory::NUMBER AS memory_mb,
-            s.value:networking_throughput::NUMBER AS networking_throughput,
-            s.value:price_hourly::NUMBER AS price_hourly,
-            s.value:price_monthly::NUMBER AS price_monthly,
-            s.value:disk_info[0]:type::STRING AS disk_type,
-            s.value:disk_info[0]:size:amount::NUMBER AS disk_size_gib,
-            s.value:disk_info[0]:size:unit::STRING AS disk_unit,
-            s.value AS payload
+          SELECT *
           FROM (
-            SELECT payload FROM "{db}"."{names.schema_cost}"."SIZES_RAW"
-            ORDER BY ingested_at DESC LIMIT 1
-          ) r,
-               LATERAL FLATTEN(input => r.payload:sizes) s
+            SELECT
+              s.value:slug::STRING AS slug,
+              s.value:available::BOOLEAN AS available,
+              s.value:description::STRING AS description,
+              s.value:disk::NUMBER AS disk_gb,
+              s.value:transfer::NUMBER AS transfer_tb,
+              s.value:vcpus::NUMBER AS vcpus,
+              s.value:memory::NUMBER AS memory_mb,
+              s.value:networking_throughput::NUMBER AS networking_throughput,
+              s.value:price_hourly::NUMBER AS price_hourly,
+              s.value:price_monthly::NUMBER AS price_monthly,
+              s.value:disk_info[0]:type::STRING AS disk_type,
+              s.value:disk_info[0]:size:amount::NUMBER AS disk_size_gib,
+              s.value:disk_info[0]:size:unit::STRING AS disk_unit,
+              s.value AS payload,
+              r.ingested_at AS src_ingested_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY s.value:slug::STRING
+                ORDER BY r.ingested_at DESC
+              ) AS rn
+            FROM "{db}"."{names.schema_cost}"."SIZES_RAW" r,
+                 LATERAL FLATTEN(input => r.payload:sizes) s
+          )
+          WHERE rn = 1
         ) src
         ON t.slug = src.slug
         WHEN MATCHED THEN UPDATE SET

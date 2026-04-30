@@ -2,7 +2,7 @@
 
 <div align="center">
 
-# InfraBott
+# Infralens
 
 ### Terraform optimization, on autopilot.
 

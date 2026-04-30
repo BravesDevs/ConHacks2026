@@ -60,17 +60,17 @@ TreeNode.model_rebuild()
 
 
 class CreatePRIn(BaseModel):
-    repo_owner: str
-    repo_name: str
-    file_path: str
-    content: str
-    base_branch: str
+    owner: str
+    repo: str
+    base: str
+    head: str
 
 
 class CreatePROut(BaseModel):
     pr_id: int
     pr_url: str
-    branch_name: str
+    head: str
+    base: str
 
 
 class UpdateFileIn(BaseModel):
