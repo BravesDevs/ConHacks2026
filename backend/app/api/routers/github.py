@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import secrets
+import uuid
 from urllib.parse import urlencode
 
 import httpx
@@ -18,12 +19,16 @@ from app.core.security import decrypt_token, encrypt_token
 from app.db.session import get_db
 from app.models.github_connection import GitHubConnection
 from app.schemas.github import (
+    CreatePRIn,
+    CreatePROut,
     GitHubConnectionOut,
     OAuthCallbackOut,
     RepoOut,
     RevokeOut,
     TrackReposIn,
     TreeNode,
+    UpdateFileIn,
+    UpdateFileOut,
 )
 from app.services.events import event_bus
 
@@ -38,6 +43,9 @@ GITHUB_USER_REPOS_URL = "https://api.github.com/users/{username}/repos"
 GITHUB_REVOKE_GRANT_URL = "https://api.github.com/applications/{client_id}/grant"
 GITHUB_TREE_URL = "https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}"
 GITHUB_CONTENTS_URL = "https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+GITHUB_REF_URL = "https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{branch}"
+GITHUB_REFS_URL = "https://api.github.com/repos/{owner}/{repo}/git/refs"
+GITHUB_PULLS_URL = "https://api.github.com/repos/{owner}/{repo}/pulls"
 GITHUB_OAUTH_SCOPES = "repo read:user"
 
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -395,3 +403,213 @@ async def get_repo_file(
         text = raw.decode("utf-8", errors="replace")
 
     return PlainTextResponse(content=text)
+
+
+@router.post("/pull-requests", response_model=CreatePROut)
+async def create_pull_request(
+    body: CreatePRIn,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> CreatePROut:
+    access_token = creds.credentials
+    if not access_token:
+        raise HTTPException(status_code=401, detail="missing_access_token")
+
+    branch_name = f"infrabott/{uuid.uuid4().hex[:8]}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    owner, repo = body.repo_owner, body.repo_name
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        ref_res = await client.get(
+            GITHUB_REF_URL.format(owner=owner, repo=repo, branch=body.base_branch),
+            headers=headers,
+        )
+        if ref_res.status_code == 404:
+            raise HTTPException(status_code=404, detail="base_branch_not_found")
+        if ref_res.status_code == 401:
+            raise HTTPException(status_code=401, detail="github_unauthorized")
+        if ref_res.status_code == 403:
+            raise HTTPException(status_code=403, detail="github_forbidden")
+        if ref_res.status_code != 200:
+            raise HTTPException(status_code=502, detail="github_base_ref_fetch_failed")
+        base_sha = (ref_res.json().get("object") or {}).get("sha")
+        if not base_sha:
+            raise HTTPException(status_code=502, detail="github_base_sha_missing")
+
+        create_ref_res = await client.post(
+            GITHUB_REFS_URL.format(owner=owner, repo=repo),
+            headers=headers,
+            json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
+        )
+        # GitHub returns 422 with "Reference already exists" for collisions; surface as 409.
+        if create_ref_res.status_code == 409 or (
+            create_ref_res.status_code == 422
+            and "already exists" in create_ref_res.text.lower()
+        ):
+            raise HTTPException(status_code=409, detail="branch_already_exists")
+        if create_ref_res.status_code != 201:
+            raise HTTPException(status_code=502, detail="github_branch_create_failed")
+
+        current_sha: str | None = None
+        existing_res = await client.get(
+            GITHUB_CONTENTS_URL.format(owner=owner, repo=repo, path=body.file_path),
+            headers=headers,
+            params={"ref": branch_name},
+        )
+        if existing_res.status_code == 200:
+            payload = existing_res.json()
+            if isinstance(payload, dict):
+                current_sha = payload.get("sha")
+        elif existing_res.status_code not in (404,):
+            raise HTTPException(status_code=502, detail="github_contents_fetch_failed")
+
+        encoded = base64.b64encode(body.content.encode("utf-8")).decode("ascii")
+        commit_payload: dict = {
+            "message": f"infrabott: update {body.file_path}",
+            "content": encoded,
+            "branch": branch_name,
+        }
+        if current_sha:
+            commit_payload["sha"] = current_sha
+
+        commit_res = await client.put(
+            GITHUB_CONTENTS_URL.format(owner=owner, repo=repo, path=body.file_path),
+            headers=headers,
+            json=commit_payload,
+        )
+        if commit_res.status_code == 422:
+            raise HTTPException(status_code=422, detail="content_unchanged_or_invalid")
+        if commit_res.status_code == 409:
+            raise HTTPException(status_code=409, detail="file_sha_conflict")
+        if commit_res.status_code not in (200, 201):
+            raise HTTPException(status_code=502, detail="github_commit_failed")
+
+        pr_res = await client.post(
+            GITHUB_PULLS_URL.format(owner=owner, repo=repo),
+            headers=headers,
+            json={
+                "title": f"InfraBott: update {body.file_path}",
+                "head": branch_name,
+                "base": body.base_branch,
+                "body": "Automated change proposed by InfraBott.",
+            },
+        )
+        if pr_res.status_code == 422:
+            raise HTTPException(status_code=422, detail="pr_validation_failed")
+        if pr_res.status_code != 201:
+            raise HTTPException(status_code=502, detail="github_pr_create_failed")
+        pr_data = pr_res.json()
+
+    return CreatePROut(
+        pr_id=pr_data["number"],
+        pr_url=pr_data["html_url"],
+        branch_name=branch_name,
+    )
+
+
+@router.put("/repos/{owner}/{repo}/files/{path:path}", response_model=UpdateFileOut)
+async def update_repo_file(
+    owner: str,
+    repo: str,
+    path: str,
+    body: UpdateFileIn,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> UpdateFileOut:
+    access_token = creds.credentials
+    if not access_token:
+        raise HTTPException(status_code=401, detail="missing_access_token")
+
+    branch_name = f"infrabott/{uuid.uuid4().hex[:8]}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {access_token}",
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        ref_res = await client.get(
+            GITHUB_REF_URL.format(owner=owner, repo=repo, branch="main"),
+            headers=headers,
+        )
+        if ref_res.status_code == 404:
+            raise HTTPException(status_code=404, detail="main_branch_not_found")
+        if ref_res.status_code == 401:
+            raise HTTPException(status_code=401, detail="github_unauthorized")
+        if ref_res.status_code == 403:
+            raise HTTPException(status_code=403, detail="github_forbidden")
+        if ref_res.status_code != 200:
+            raise HTTPException(status_code=502, detail="github_base_ref_fetch_failed")
+        base_sha = (ref_res.json().get("object") or {}).get("sha")
+        if not base_sha:
+            raise HTTPException(status_code=502, detail="github_base_sha_missing")
+
+        create_ref_res = await client.post(
+            GITHUB_REFS_URL.format(owner=owner, repo=repo),
+            headers=headers,
+            json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
+        )
+        if create_ref_res.status_code == 409 or (
+            create_ref_res.status_code == 422
+            and "already exists" in create_ref_res.text.lower()
+        ):
+            raise HTTPException(status_code=409, detail="branch_already_exists")
+        if create_ref_res.status_code == 401:
+            raise HTTPException(status_code=401, detail="github_unauthorized")
+        if create_ref_res.status_code == 403:
+            raise HTTPException(
+                status_code=403, detail="github_forbidden_no_write_permission"
+            )
+        if create_ref_res.status_code != 201:
+            raise HTTPException(status_code=502, detail="github_branch_create_failed")
+
+        existing_res = await client.get(
+            GITHUB_CONTENTS_URL.format(owner=owner, repo=repo, path=path),
+            headers=headers,
+            params={"ref": branch_name},
+        )
+        current_sha: str | None = None
+        if existing_res.status_code == 200:
+            payload = existing_res.json()
+            if isinstance(payload, list) or payload.get("type") != "file":
+                raise HTTPException(status_code=400, detail="path_is_not_a_file")
+            current_sha = payload.get("sha")
+        elif existing_res.status_code not in (404,):
+            raise HTTPException(status_code=502, detail="github_contents_fetch_failed")
+
+        encoded = base64.b64encode(body.content.encode("utf-8")).decode("ascii")
+        commit_payload: dict = {
+            "message": body.message,
+            "content": encoded,
+            "branch": branch_name,
+        }
+        if current_sha:
+            commit_payload["sha"] = current_sha
+
+        commit_res = await client.put(
+            GITHUB_CONTENTS_URL.format(owner=owner, repo=repo, path=path),
+            headers=headers,
+            json=commit_payload,
+        )
+        if commit_res.status_code == 401:
+            raise HTTPException(status_code=401, detail="github_unauthorized")
+        if commit_res.status_code == 403:
+            raise HTTPException(
+                status_code=403, detail="github_forbidden_no_write_permission"
+            )
+        if commit_res.status_code == 409:
+            raise HTTPException(status_code=409, detail="file_sha_conflict")
+        if commit_res.status_code == 422:
+            raise HTTPException(status_code=422, detail="content_unchanged_or_invalid")
+        if commit_res.status_code not in (200, 201):
+            raise HTTPException(status_code=502, detail="github_commit_failed")
+
+        result = commit_res.json()
+
+    return UpdateFileOut(
+        path=path,
+        branch=branch_name,
+        commit_sha=(result.get("commit") or {}).get("sha", ""),
+        content_sha=(result.get("content") or {}).get("sha", ""),
+        created=current_sha is None,
+    )
