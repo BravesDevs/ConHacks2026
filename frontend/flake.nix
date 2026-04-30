@@ -19,7 +19,11 @@
           ];
 
           shellHook = ''
-            echo "Node.js environment loaded with pnpm"
+            if [ ! -d node_modules ]; then
+              echo "Installing dependencies..."
+              pnpm install
+            fi
+            echo "Frontend environment ready. Run: pnpm dev"
           '';
         };
       });

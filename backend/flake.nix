@@ -42,13 +42,13 @@
 
             source .venv/bin/activate
 
-            if [ ! -f .venv/.installed ] || [ requirements.txt -nt .venv/.installed ]; then
-              echo "Installing requirements..."
+            if [ ! -f .venv/.installed ] || [ pyproject.toml -nt .venv/.installed ]; then
+              echo "Installing dependencies..."
               uv pip install -r requirements.txt --quiet
               touch .venv/.installed
             fi
 
-            echo "Backend environment ready. Run: python -m uvicorn app.main:app --reload"
+            echo "Backend environment ready. Run: uv run uvicorn app.main:app --reload --port 8000"
           '';
         };
       });

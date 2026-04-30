@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { fetchSavingsSummary, triggerSavingsCall } from '../api';
-import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   ExternalLink,
@@ -40,7 +39,7 @@ import type {
   AnalysisResult,
 } from '../types';
 import { MONTH_LABELS_12 } from '../mockData';
-import { fetchAnalysis, runPipeline, createPipelinePR, buildChangesFromResources } from '../api';
+import { fetchAnalysis, createPipelinePR, buildChangesFromResources } from '../api';
 import RecommendationCard from './RecommendationCard';
 import TerraformDiff from './TerraformDiff';
 
@@ -50,7 +49,7 @@ interface DashboardScreenProps {
 }
 
 type RecFilter = 'all' | 'with-diff' | 'pending';
-type PipelinePhase = 'idle' | 'fetching-tf' | 'running' | 'creating-pr' | 'done' | 'error';
+type PipelinePhase = 'idle' | 'running' | 'creating-pr' | 'done' | 'error';
 
 const PROVIDER_COLORS: Record<string, string> = {
   DigitalOcean: '#22d3ee',
@@ -112,7 +111,9 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelinePhase, setPipelinePhase] = useState<PipelinePhase>('idle');
+  const [pipelinePrUrl, setPipelinePrUrl] = useState<string | null>(null);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAnalysis(config)
@@ -127,39 +128,23 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
       .finally(() => setLoading(false));
   }, []);
 
-  async function handleRunPipeline() {
+  async function handleCreatePR() {
+    if (!config.githubToken || !config.repoUrl) return;
     setPipelinePhase('running');
     setPipelinePrUrl(null);
     setPipelineError(null);
 
     try {
-      const pipelineResult = await runPipeline(config);
-
-      if (pipelineResult.errors?.length) {
-        setPipelineError(`Pipeline: ${pipelineResult.errors.join(' | ')}`);
+      const resourcesWithDiff = (analysisResult?.resources ?? []).filter(r => r.terraformDiff);
+      setPipelinePhase('creating-pr');
+      const changes = await buildChangesFromResources(config, resourcesWithDiff);
+      if (changes.length === 0) {
+        setPipelineError('No changes found in repo matching the recommendations.');
+        setPipelinePhase('error');
+        return;
       }
-
-      // Phase 3: fetch fresh analysis — backend SPs have already written results
-      const analysis = await fetchAnalysis(config);
-      setAnalysisResult(analysis);
-      if (analysis.resources.length > 0) setSelectedResourceId(analysis.resources[0].id);
-
-      // Phase 4: create PR — prefer backend-generated changes (real file edits),
-      // fall back to client-side diff parsing if the backend didn't return any
-      if (config.githubToken && config.repoUrl) {
-        const backendChanges = pipelineResult.changes ?? [];
-        const resourcesWithDiff = analysis.resources.filter(r => r.terraformDiff && r.terraformFile);
-        const changes = backendChanges.length > 0
-          ? backendChanges
-          : await buildChangesFromResources(config, resourcesWithDiff);
-
-        if (changes.length > 0) {
-          setPipelinePhase('creating-pr');
-          const { prUrl } = await createPipelinePR(config, changes);
-          setPipelinePrUrl(prUrl);
-        }
-      }
-
+      const { prUrl } = await createPipelinePR(config, changes);
+      setPipelinePrUrl(prUrl);
       setPipelinePhase('done');
     } catch (err) {
       setPipelineError(String(err));
@@ -175,7 +160,6 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   }, [analysisResult]);
 
   const pipelineRunning =
-    pipelinePhase === 'fetching-tf' ||
     pipelinePhase === 'running' ||
     pipelinePhase === 'creating-pr';
 
@@ -636,8 +620,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
             key={f.id}
             onClick={() => setRecFilter(f.id)}
             className={`border px-4 py-1.5 font-['Chakra_Petch'] text-[10px] tracking-[0.12em] transition-colors ${recFilter === f.id
-                ? 'border-[#f97316]/50 bg-[#f97316]/10 text-[#f97316]'
-                : 'border-white/08 text-white/30 hover:text-white/60'
+              ? 'border-[#f97316]/50 bg-[#f97316]/10 text-[#f97316]'
+              : 'border-white/08 text-white/30 hover:text-white/60'
               }`}
           >
             {f.label}
@@ -752,8 +736,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
                   className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${activeTab === item.id
-                      ? 'border-l-2 border-[#f97316] bg-[#f97316]/08 text-[#f97316]'
-                      : 'border-l-2 border-transparent text-white/30 hover:text-white/60'
+                    ? 'border-l-2 border-[#f97316] bg-[#f97316]/08 text-[#f97316]'
+                    : 'border-l-2 border-transparent text-white/30 hover:text-white/60'
                     }`}
                 >
                   <item.icon className="h-3.5 w-3.5 flex-shrink-0" />
@@ -765,17 +749,17 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
             {/* Footer */}
             <div className="mt-4 space-y-2 border-t border-white/05 pt-4">
               <button
-                onClick={handleRunPipeline}
+                onClick={handleCreatePR}
                 disabled={pipelineRunning}
                 className={`flex w-full items-center gap-2 border px-3 py-2 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] transition-colors ${pipelineRunning
-                    ? 'border-[#f97316]/30 text-[#f97316]/50 cursor-not-allowed'
-                    : 'border-[#f97316]/40 text-[#f97316]/70 hover:border-[#f97316]/70 hover:text-[#f97316]'
+                  ? 'border-[#f97316]/30 text-[#f97316]/50 cursor-not-allowed'
+                  : 'border-[#f97316]/40 text-[#f97316]/70 hover:border-[#f97316]/70 hover:text-[#f97316]'
                   }`}
               >
                 <Sparkles className={`h-3 w-3 ${pipelineRunning ? 'animate-pulse' : ''}`} />
-                {pipelinePhase === 'running' ? 'RUNNING...' :
+                {pipelinePhase === 'running' ? 'SCANNING...' :
                   pipelinePhase === 'creating-pr' ? 'CREATING PR...' :
-                    'RUN PIPELINE'}
+                    'CREATE PR'}
               </button>
               {pipelinePrUrl && (
                 <a
@@ -820,8 +804,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                     key={p}
                     onClick={() => setProviderFilter(p)}
                     className={`border px-2.5 py-1 font-['Chakra_Petch'] text-[10px] tracking-[0.08em] transition-colors ${providerFilter === p
-                        ? 'border-[#f97316]/50 bg-[#f97316]/10 text-[#f97316]'
-                        : 'border-white/08 text-white/30 hover:text-white/60'
+                      ? 'border-[#f97316]/50 bg-[#f97316]/10 text-[#f97316]'
+                      : 'border-white/08 text-white/30 hover:text-white/60'
                       }`}
                   >
                     {p === 'DigitalOcean' ? 'DO' : p.toUpperCase()}
@@ -838,8 +822,8 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                     key={t}
                     onClick={() => setTypeFilter(t)}
                     className={`border px-2.5 py-1 font-['Chakra_Petch'] text-[10px] tracking-[0.08em] transition-colors ${typeFilter === t
-                        ? 'border-[#22d3ee]/50 bg-[#22d3ee]/10 text-[#22d3ee]'
-                        : 'border-white/08 text-white/30 hover:text-white/60'
+                      ? 'border-[#22d3ee]/50 bg-[#22d3ee]/10 text-[#22d3ee]'
+                      : 'border-white/08 text-white/30 hover:text-white/60'
                       }`}
                   >
                     {t.toUpperCase()}
