@@ -227,6 +227,15 @@ def upload_json_to_stage_and_ingest(
         else:
             remote_name = f"{int(time.time())}.json"
 
+        # Derive the target table FQN from the pipe FQN so we can COPY INTO directly.
+        # ALTER PIPE REFRESH is async (Snowpipe queues but doesn't block until loaded),
+        # so we bypass it and use a synchronous COPY INTO instead.
+        table_fqn = (
+            pipe_fqn
+            .replace('"."SIZES_RAW_PIPE"', '"."SIZES_RAW"')
+            .replace('"."RAW_PIPE"', '"."RAW"')
+        )
+
         with _connect_integration(settings) as conn:
             cur = conn.cursor()
             try:
@@ -234,29 +243,15 @@ def upload_json_to_stage_and_ingest(
                 cur.execute(
                     f"PUT file://{tmp_path.as_posix()} {stage_path}/{remote_name} AUTO_COMPRESS=FALSE OVERWRITE=TRUE;"
                 )
-                cur.execute(f"ALTER PIPE {pipe_fqn} REFRESH;")
-
-                deadline = time.time() + poll_timeout_seconds
-                while True:
-                    cur.execute(f"SELECT SYSTEM$PIPE_STATUS('{pipe_fqn}')")
-                    status_raw = cur.fetchone()[0]
-                    status = (
-                        json.loads(status_raw)
-                        if isinstance(status_raw, str)
-                        else status_raw
-                    )
-                    pending = 0
-                    try:
-                        pending = int(status.get("pendingFileCount", 0))
-                    except Exception:
-                        pending = 0
-                    if pending == 0 or time.time() >= deadline:
-                        return {
-                            "pipe_status": status,
-                            "remote_name": remote_name,
-                            "stage_path": stage_path,
-                        }
-                    time.sleep(poll_seconds)
+                cur.execute(
+                    f"COPY INTO {table_fqn}(payload) "
+                    f"FROM (SELECT $1 FROM {stage_path}/{remote_name}) "
+                    f"FILE_FORMAT=(TYPE=JSON);"
+                )
+                return {
+                    "remote_name": remote_name,
+                    "stage_path": stage_path,
+                }
             finally:
                 cur.close()
     finally:

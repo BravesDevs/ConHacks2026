@@ -27,6 +27,7 @@ from app.services.ingest_service import (
     ingest_metrics_json,
     ingest_terraform_resolved_resources,
 )
+from app.services.terraform_reader import parse_all_resources_from_content
 from app.services.snowflake_service import (
     SnowflakeNames,
     ensure_snowflake_setup,
@@ -300,6 +301,46 @@ def upload_resolved(
         )
         succeed_job(settings, job_id=job.job_id)
         return {"job_id": job.job_id, "result": out}
+    except Exception as e:
+        try:
+            fail_job(settings, job_id=locals().get("job").job_id, error=str(e))  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@terraform_router.post("/upload-from-github")
+async def upload_from_github(
+    github_token: str = Body(..., embed=True),
+    repo_owner: str = Body(..., embed=True),
+    repo_name: str = Body(..., embed=True),
+    branch: str = Body(default="main", embed=True),
+    settings=Depends(require_internal_job_token),
+) -> SnowflakeJobResultResponse:
+    """Fetch terraform/sample/main_hardcoded.tf from GitHub, parse it, and upload resolved resources."""
+    import base64
+    import httpx
+
+    tf_path = "terraform/sample/main_hardcoded.tf"
+    try:
+        job = start_job(settings, endpoint="/snowflake/v2/terraform/upload-from-github",
+                        params={"repo": f"{repo_owner}/{repo_name}", "branch": branch})
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(
+                f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{tf_path}",
+                headers={"Authorization": f"Bearer {github_token}", "Accept": "application/vnd.github+json"},
+                params={"ref": branch},
+            )
+            if res.status_code != 200:
+                raise ValueError(f"GitHub fetch failed: {res.status_code} — {res.text}")
+            payload = res.json()
+            content = base64.b64decode(payload["content"]).decode("utf-8", errors="replace")
+
+        resources = parse_all_resources_from_content({tf_path: content})
+        out = ingest_terraform_resolved_resources(settings, resources=resources, filename="main_hardcoded.json")
+        succeed_job(settings, job_id=job.job_id)
+        return {"job_id": job.job_id, "result": {**out, "resources": resources}}
     except Exception as e:
         try:
             fail_job(settings, job_id=locals().get("job").job_id, error=str(e))  # type: ignore[attr-defined]

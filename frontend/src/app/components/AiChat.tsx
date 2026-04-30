@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot } from 'lucide-react';
 import { Sheet, SheetContent } from './ui/sheet';
 import { sendChatMessage } from '../api';

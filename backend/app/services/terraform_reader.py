@@ -150,7 +150,7 @@ def parse_terraform_dir(tf_dir: str | Path) -> dict[str, Any]:
                     relevant_keys = _COST_ATTRS.get(rtype)
                     if relevant_keys is None:
                         continue
-                    entry: dict[str, Any] = {"type": rtype, "name": rname}
+                    entry: dict[str, Any] = {"type": rtype, "name": rname, "file": tf_file.name}
                     for key in relevant_keys:
                         raw = body.get(key)
                         if raw is None:
@@ -166,6 +166,48 @@ def parse_terraform_dir(tf_dir: str | Path) -> dict[str, Any]:
     }
 
     return {"variables": safe_variables, "resources": resources}
+
+
+def parse_terraform_from_content(file_contents: dict[str, str]) -> dict[str, Any]:
+    """Parse terraform files supplied as a path→content dict (no network call)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for path, content in file_contents.items():
+            dest = tmp_path / Path(path).name
+            dest.write_text(content, encoding="utf-8")
+        return parse_terraform_dir(tmp_path)
+
+
+_UPLOAD_FIELDS = {"region", "size", "image", "tags"}
+
+
+def parse_all_resources_from_content(file_contents: dict[str, str]) -> list[dict[str, Any]]:
+    """Parse terraform resources and return only the upload-resolved schema fields.
+
+    Output shape: [{"resource_type", "name", "region", "size", "image", "tags", "file"}]
+    """
+    resources: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for path, content in file_contents.items():
+            dest = tmp_path / Path(path).name
+            dest.write_text(content, encoding="utf-8")
+
+        for tf_file in sorted(tmp_path.glob("*.tf")):
+            with tf_file.open() as f:
+                parsed = hcl2.load(f)
+            for resource_block in parsed.get("resource", []):
+                for rtype, instances in resource_block.items():
+                    for rname, body in instances.items():
+                        body = _unwrap(body)
+                        if not isinstance(body, dict):
+                            continue
+                        entry: dict[str, Any] = {"resource_type": rtype, "name": rname, "file": tf_file.name}
+                        for k in _UPLOAD_FIELDS:
+                            if k in body:
+                                entry[k] = _unwrap(body[k])
+                        resources.append(entry)
+    return resources
 
 
 async def parse_terraform_from_github(

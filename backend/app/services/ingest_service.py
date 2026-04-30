@@ -8,7 +8,7 @@ from app.services.snowflake_service import (
     SnowflakeNames,
     upload_json_to_stage_and_ingest,
 )
-from app.services.terraform_reader import parse_terraform_dir, parse_terraform_from_github
+from app.services.terraform_reader import parse_terraform_dir, parse_terraform_from_content, parse_terraform_from_github
 
 
 def ingest_metrics_json(
@@ -114,6 +114,25 @@ def ingest_terraform_from_local(
         settings,
         resources=resources,
         filename=filename or f"local_{run_id}.json",
+    )
+
+
+def ingest_terraform_from_content(
+    settings: Settings,
+    *,
+    file_contents: dict[str, str],
+    run_id: str,
+) -> dict[str, Any]:
+    """Ingest terraform from an already-fetched path→content dict."""
+    parsed = parse_terraform_from_content(file_contents)
+    resources = [
+        {("resource_type" if k == "type" else k): v for k, v in r.items()}
+        for r in parsed.get("resources", [])
+    ]
+    return ingest_terraform_resolved_resources(
+        settings,
+        resources=resources,
+        filename=f"inline_{run_id}.json",
     )
 
 

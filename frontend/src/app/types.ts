@@ -67,3 +67,19 @@ export interface ChatMessage {
   content: string;
   timestamp: Date;
 }
+
+export interface TerraformFile {
+  path: string;
+  content: string;
+  sha: string;
+}
+
+export interface TerraformFileMap {
+  files: Record<string, TerraformFile>;
+}
+
+export interface PipelineChange {
+  filePath: string;
+  content: string;
+  description?: string;
+}

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
@@ -13,9 +16,11 @@ from app.core.config import get_settings
 from app.services.ingest_service import (
     ingest_digitalocean_sizes,
     ingest_metrics_json,
+    ingest_terraform_resolved_resources,
     ingest_terraform_from_github,
     ingest_terraform_from_local,
 )
+from app.services.terraform_reader import parse_all_resources_from_content
 from app.services.digitalocean_ai_service import chat_complete
 from app.services.snowflake_service import SnowflakeNames, run_sql_with_context_no_schema
 
@@ -34,12 +39,13 @@ def _severity(savings: float) -> str:
     return "low"
 
 
-def _tf_diff(resource_name: str, size_var: str, old_size: str, new_size: str) -> str:
-    return (
-        f'# terraform.tfvars\n'
-        f'-{size_var} = "{old_size}"\n'
-        f'+{size_var} = "{new_size}"'
-    )
+def _tf_diff(tf_file: str, size_var: str | None, old_size: str, new_size: str) -> str:
+    if size_var:
+        # Value is controlled by a tfvars variable
+        return f'# {tf_file}\n-{size_var} = "{old_size}"\n+{size_var} = "{new_size}"'
+    else:
+        # Value is hardcoded directly in the resource block
+        return f'# {tf_file}\n-  size = "{old_size}"\n+  size = "{new_size}"'
 
 
 def _map_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -52,7 +58,14 @@ def _map_row(row: dict[str, Any]) -> dict[str, Any]:
     explanation = row.get("EXPLANATION") or f"Downsize from {old_size} to {new_size} — estimated ${savings:.0f}/month savings."
     region = row.get("REGION") or "nyc3"
     tf_name = row.get("TF_NAME") or resource_id
-    size_var = row.get("SIZE_VAR") or "droplet_size"
+    # size_var is set when the size comes from a tfvar (e.g. var.droplet_size); None when hardcoded
+    size_var: str | None = row.get("SIZE_VAR") or None
+    # Use the source file tracked during terraform parsing; fall back based on whether it's a var
+    source_file = row.get("TF_FILE") or None
+    if size_var:
+        terraform_file = "terraform.tfvars"
+    else:
+        terraform_file = source_file or "main.tf"
 
     return {
         "id": resource_id,
@@ -70,8 +83,8 @@ def _map_row(row: dict[str, Any]) -> dict[str, Any]:
         "trendCurrent": [old_price] * 12,
         "trendOptimized": [new_price] * 12,
         "recommendation": explanation,
-        "terraformDiff": _tf_diff(tf_name, size_var, old_size, new_size),
-        "terraformFile": "terraform.tfvars",
+        "terraformDiff": _tf_diff(terraform_file, size_var, old_size, new_size),
+        "terraformFile": terraform_file,
         "severity": _severity(savings),
         "approvalStatus": "pending",
     }
@@ -112,6 +125,7 @@ def get_recommendations() -> dict[str, Any]:
               t.region,
               t.payload:name::STRING       AS tf_name,
               t.payload:size_var::STRING   AS size_var,
+              t.payload:file::STRING       AS tf_file,
               (100 - COALESCE(c.avg_cpu, 100)) AS avg_cpu
             FROM recs r
             LEFT JOIN "{db}"."{names.schema_cost}"."SIZES" os ON os.slug = r.old_size
@@ -196,11 +210,68 @@ async def chat(question: str = Body(..., embed=True)) -> dict[str, Any]:
     return {"answer": answer}
 
 
+def _apply_recommendations_to_files(
+    terraform_files: dict[str, "TerraformFileEntry"],
+    rec_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Apply Snowflake recommendations to actual file contents and return changed files."""
+    # Mutable working copy: full_path -> current content
+    contents: dict[str, str] = {p: e.content for p, e in terraform_files.items()}
+    descriptions: dict[str, list[str]] = {}
+
+    for rec in rec_rows:
+        old_size = (rec.get("OLD_SIZE") or "").strip()
+        new_size = (rec.get("NEW_SIZE") or "").strip()
+        resource_id = (rec.get("RESOURCE_ID") or "unknown").strip()
+        size_var = (rec.get("SIZE_VAR") or "").strip() or None
+        tf_file_basename = (rec.get("TF_FILE") or "").strip() or None
+
+        if not old_size or not new_size or old_size == new_size:
+            continue
+
+        if size_var:
+            # Size is a tfvars variable — change lives in terraform.tfvars
+            target_basename = "terraform.tfvars"
+            search = f'{size_var} = "{old_size}"'
+            replace = f'{size_var} = "{new_size}"'
+        else:
+            # Size is hardcoded — change lives in the resource's .tf file
+            target_basename = tf_file_basename or "main.tf"
+            search = f'"{old_size}"'
+            replace = f'"{new_size}"'
+
+        for full_path in list(contents):
+            if Path(full_path).name == target_basename and search in contents[full_path]:
+                contents[full_path] = contents[full_path].replace(search, replace, 1)
+                descriptions.setdefault(full_path, []).append(
+                    f"{resource_id}: {old_size} → {new_size}"
+                )
+                break
+
+    return [
+        {
+            "filePath": fp,
+            "content": contents[fp],
+            "description": "; ".join(descriptions[fp]),
+        }
+        for fp in descriptions
+        if contents[fp] != terraform_files[fp].content
+    ]
+
+
+class TerraformFileEntry(BaseModel):
+    path: str = ""
+    content: str = ""
+    sha: str = ""
+
+
 class PipelineRunRequest(BaseModel):
     github_token: str = ""
     repo_owner: str = ""
     repo_name: str = ""
     branch: str = "main"
+    # Full repo file map: { "path/to/file.tf": { path, content, sha } }
+    terraform_files: dict[str, TerraformFileEntry] = {}
 
 
 @router.post("/pipeline/run")
@@ -230,20 +301,25 @@ async def run_pipeline(body: PipelineRunRequest = Body(default=PipelineRunReques
     else:
         steps.append("ingest_metrics: no sample_payloads dir found")
 
-    # 3. Ingest Terraform — GitHub repo takes priority over local path
+    # 3. Fetch terraform/sample/main_hardcoded.tf from GitHub, parse, and upload resolved resources
+    _TF_SAMPLE_PATH = "terraform/sample/main_hardcoded.tf"
     if body.github_token and body.repo_owner and body.repo_name:
         try:
-            await ingest_terraform_from_github(
-                settings,
-                owner=body.repo_owner,
-                repo=body.repo_name,
-                branch=body.branch or "main",
-                token=body.github_token,
-                run_id=run_id,
-            )
-            steps.append(f"ingest_terraform_github:{body.repo_owner}/{body.repo_name}: ok")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.get(
+                    f"https://api.github.com/repos/{body.repo_owner}/{body.repo_name}/contents/{_TF_SAMPLE_PATH}",
+                    headers={"Authorization": f"Bearer {body.github_token}", "Accept": "application/vnd.github+json"},
+                    params={"ref": body.branch or "main"},
+                )
+                if res.status_code != 200:
+                    raise ValueError(f"GitHub fetch failed: {res.status_code}")
+                content = base64.b64decode(res.json()["content"]).decode("utf-8", errors="replace")
+            resources = parse_all_resources_from_content({_TF_SAMPLE_PATH: content})
+            steps.append(f"parse_terraform: ok ({len(resources)} resources: {[r.get('name') for r in resources]})")
+            ingest_terraform_resolved_resources(settings, resources=resources, filename=f"inline_{run_id}.json")
+            steps.append("upload_terraform_resolved: ok")
         except Exception as e:
-            steps.append(f"ingest_terraform_github: failed ({e})")
+            steps.append(f"ingest_terraform: failed ({e})")
     elif settings.terraform_local_path:
         try:
             ingest_terraform_from_local(settings, run_id=run_id)
@@ -375,9 +451,46 @@ async def run_pipeline(body: PipelineRunRequest = Body(default=PipelineRunReques
         steps.append(f"do_ai_summarize: failed ({e})")
         errors.append(f"do_ai_summarize: {e}")
 
+    # 9. Generate actual file changes from provided terraform files + recommendations
+    changes: list[dict[str, Any]] = []
+    if body.terraform_files:
+        try:
+            rec_rows = run_sql_with_context_no_schema(
+                settings,
+                sql=f"""
+                WITH latest_ts AS (
+                  SELECT MAX(created_at) AS max_ts
+                  FROM "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS"
+                  WHERE resource_id IS NOT NULL AND resource_id <> ''
+                    AND old_size IS NOT NULL AND old_size <> 'unknown'
+                )
+                SELECT
+                  r.resource_id,
+                  r.old_size,
+                  r.new_size,
+                  t.payload:size_var::STRING  AS size_var,
+                  t.payload:file::STRING      AS tf_file
+                FROM "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS" r
+                LEFT JOIN (
+                  SELECT droplet_size, payload
+                  FROM "{db}"."{names.schema_terraform}"."CLEAN"
+                  QUALIFY ROW_NUMBER() OVER (PARTITION BY droplet_size ORDER BY ingested_at DESC) = 1
+                ) t ON t.droplet_size = r.old_size
+                WHERE r.resource_id IS NOT NULL AND r.resource_id <> ''
+                  AND r.old_size IS NOT NULL AND r.old_size <> 'unknown'
+                  AND r.created_at >= DATEADD('minute', -5, (SELECT max_ts FROM latest_ts))
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY r.resource_id ORDER BY r.created_at DESC) = 1
+                """,
+            )
+            changes = _apply_recommendations_to_files(body.terraform_files, rec_rows)
+            steps.append(f"generate_changes: ok ({len(changes)} files modified)")
+        except Exception as e:
+            steps.append(f"generate_changes: failed ({e})")
+
     return {
         "runId": run_id,
         "steps": steps,
         "errors": errors,
         "completedAt": datetime.utcnow().isoformat(),
+        "changes": changes,
     }

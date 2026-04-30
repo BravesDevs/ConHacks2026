@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
+  ExternalLink,
   FileCode2,
   RefreshCw,
   Search,
@@ -29,13 +30,14 @@ import type {
   DashboardTab,
   Provider,
   ResourceType,
+  ResourceRecord,
   ChartType,
   TimeRange,
   ScanConfig,
+  AnalysisResult,
 } from '../types';
 import { MONTH_LABELS_12 } from '../mockData';
-import { fetchAnalysis, runPipeline } from '../api';
-import type { AnalysisResult } from '../types';
+import { fetchAnalysis, runPipeline, createPipelinePR, buildChangesFromResources } from '../api';
 import RecommendationCard from './RecommendationCard';
 import TerraformDiff from './TerraformDiff';
 
@@ -45,6 +47,7 @@ interface DashboardScreenProps {
 }
 
 type RecFilter = 'all' | 'with-diff' | 'pending';
+type PipelinePhase = 'idle' | 'fetching-tf' | 'running' | 'creating-pr' | 'done' | 'error';
 
 const PROVIDER_COLORS: Record<string, string> = {
   DigitalOcean: '#22d3ee',
@@ -106,7 +109,9 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelinePhase, setPipelinePhase] = useState<PipelinePhase>('idle');
+  const [pipelinePrUrl, setPipelinePrUrl] = useState<string | null>(null);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAnalysis(config)
@@ -121,25 +126,57 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
       .finally(() => setLoading(false));
   }, []);
 
-  function handleRunPipeline() {
-    setPipelineRunning(true);
-    setFetchError(null);
-    runPipeline(config)
-      .then(pipelineResult => {
-        if (pipelineResult.errors?.length) {
-          setFetchError(`Pipeline errors: ${pipelineResult.errors.join(' | ')}`);
+  async function handleRunPipeline() {
+    setPipelinePhase('running');
+    setPipelinePrUrl(null);
+    setPipelineError(null);
+
+    try {
+      const pipelineResult = await runPipeline(config);
+
+      if (pipelineResult.errors?.length) {
+        setPipelineError(`Pipeline: ${pipelineResult.errors.join(' | ')}`);
+      }
+
+      // Phase 3: fetch fresh analysis — backend SPs have already written results
+      const analysis = await fetchAnalysis(config);
+      setAnalysisResult(analysis);
+      if (analysis.resources.length > 0) setSelectedResourceId(analysis.resources[0].id);
+
+      // Phase 4: create PR — prefer backend-generated changes (real file edits),
+      // fall back to client-side diff parsing if the backend didn't return any
+      if (config.githubToken && config.repoUrl) {
+        const backendChanges = pipelineResult.changes ?? [];
+        const resourcesWithDiff = analysis.resources.filter(r => r.terraformDiff && r.terraformFile);
+        const changes = backendChanges.length > 0
+          ? backendChanges
+          : await buildChangesFromResources(config, resourcesWithDiff);
+
+        if (changes.length > 0) {
+          setPipelinePhase('creating-pr');
+          const { prUrl } = await createPipelinePR(config, changes);
+          setPipelinePrUrl(prUrl);
         }
-        return fetchAnalysis(config);
-      })
-      .then(result => {
-        setAnalysisResult(result);
-        if (result.resources.length > 0) setSelectedResourceId(result.resources[0].id);
-      })
-      .catch(err => setFetchError(String(err)))
-      .finally(() => setPipelineRunning(false));
+      }
+
+      setPipelinePhase('done');
+    } catch (err) {
+      setPipelineError(String(err));
+      setPipelinePhase('error');
+    }
   }
 
-  const allResources = analysisResult?.resources ?? [];
+  // Deduplicate by resource ID, keeping the most recent entry (last in array).
+  const allResources = useMemo(() => {
+    const seen = new Map<string, ResourceRecord>();
+    for (const r of (analysisResult?.resources ?? [])) seen.set(r.id, r);
+    return Array.from(seen.values());
+  }, [analysisResult]);
+
+  const pipelineRunning =
+    pipelinePhase === 'fetching-tf' ||
+    pipelinePhase === 'running' ||
+    pipelinePhase === 'creating-pr';
 
   const filteredResources = useMemo(() => {
     return allResources.filter(r => {
@@ -741,8 +778,26 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
                 }`}
               >
                 <Sparkles className={`h-3 w-3 ${pipelineRunning ? 'animate-pulse' : ''}`} />
-                {pipelineRunning ? 'RUNNING...' : 'RUN ANALYSIS'}
+                {pipelinePhase === 'running'     ? 'RUNNING...' :
+                 pipelinePhase === 'creating-pr' ? 'CREATING PR...' :
+                 'RUN PIPELINE'}
               </button>
+              {pipelinePrUrl && (
+                <a
+                  href={pipelinePrUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex w-full items-center gap-2 border border-[#22d3ee]/30 px-3 py-2 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] text-[#22d3ee]/70 transition-colors hover:border-[#22d3ee]/60 hover:text-[#22d3ee]"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  VIEW PR →
+                </a>
+              )}
+              {pipelineError && (
+                <div className="px-1 font-['IBM_Plex_Mono'] text-[10px] leading-relaxed text-[#f87171]/70">
+                  {pipelineError}
+                </div>
+              )}
               <button
                 onClick={onRescan}
                 className="flex w-full items-center gap-2 border border-white/08 px-3 py-2 font-['Chakra_Petch'] text-[10px] tracking-[0.1em] text-white/30 transition-colors hover:border-white/16 hover:text-white/60"
