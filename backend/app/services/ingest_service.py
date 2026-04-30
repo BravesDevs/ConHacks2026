@@ -97,6 +97,8 @@ def ingest_terraform_resolved_resources(
         pipe_fqn=pipe,
         filename=filename,
     )
+
+
 def ingest_terraform_from_local(
     settings: Settings, *, run_id: str, filename: str | None = None
 ) -> dict[str, Any]:

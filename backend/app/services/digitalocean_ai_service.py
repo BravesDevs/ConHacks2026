@@ -8,7 +8,7 @@ from app.core.config import Settings
 
 
 DO_AI_BASE_URL = "https://inference.do-ai.run/v1/chat/completions"
-DO_AI_MODEL = "alibaba-qwen3-32b"
+DO_AI_MODEL = "nemotron-nano-12b-v2-vl"
 
 
 async def chat_complete(

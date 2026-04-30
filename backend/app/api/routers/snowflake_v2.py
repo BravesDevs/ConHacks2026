@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import asyncio
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api.deps import require_internal_job_token
@@ -474,21 +476,10 @@ async def cortex_summarize(
             """,
         )
         recs = [r for r in recs if "RESOURCE_ID" in r]
-        inserted = 0
-        for r in recs:
-            rid_raw = r.get("RESOURCE_ID") or ""
-            rid_sql = str(rid_raw).replace("'", "''")
-            old_size = str(r.get("OLD_SIZE") or "unknown")
-            new_size = str(r.get("NEW_SIZE") or "unknown")
-            savings = r.get("ESTIMATED_SAVINGS")
-            prompt = (
-                "You are a cloud cost optimization assistant. Explain the recommendation in plain English.\\n"
-                f"Resource ID: {rid_raw}\\n"
-                f"Old size: {old_size} New size: {new_size}\\n"
-                f"Estimated savings (monthly): {savings if savings is not None else 'unknown'}\\n\\n"
-                "Use the provided metrics payload JSON context when relevant."
-            )
-            exists = run_sql_with_context(
+
+        def _needs_summary(resource_id: str) -> bool:
+            rid_sql = resource_id.replace("'", "''")
+            exists_rows = run_sql_with_context(
                 settings,
                 sql=f"""
                 SELECT 1 AS X
@@ -499,25 +490,84 @@ async def cortex_summarize(
                 LIMIT 1;
                 """,
             )
-            exists = any("X" in row for row in exists)
-            if exists:
-                continue
+            return not any("X" in row for row in exists_rows)
 
-            metrics = run_sql_with_context(
+        to_generate: list[dict[str, Any]] = []
+        for r in recs:
+            rid_raw = str(r.get("RESOURCE_ID") or "")
+            if not rid_raw:
+                continue
+            if _needs_summary(rid_raw):
+                to_generate.append(r)
+
+        async def _generate_one(r: dict[str, Any]) -> tuple[str, str] | None:
+            rid_raw = str(r.get("RESOURCE_ID") or "")
+            if not rid_raw:
+                return None
+            rid_sql = rid_raw.replace("'", "''")
+            old_size = str(r.get("OLD_SIZE") or "unknown")
+            new_size = str(r.get("NEW_SIZE") or "unknown")
+            savings = r.get("ESTIMATED_SAVINGS")
+
+            # Smaller prompt: keep it tight and structured.
+            prompt = (
+                "Explain this DigitalOcean droplet downsizing recommendation in plain English.\n"
+                f"resource_id={rid_raw}\nold_size={old_size}\nnew_size={new_size}\n"
+                f"estimated_savings_monthly={savings if savings is not None else 'unknown'}\n"
+                "Include: what changes, why, and any risk/caveats. Keep under 8 bullet points."
+            )
+
+            metrics_summary_rows = run_sql_with_context(
                 settings,
                 sql=f"""
-                SELECT TO_VARCHAR(payload) AS P
-                FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
-                WHERE resource_id = '{rid_sql}'
-                ORDER BY ingested_at DESC
-                LIMIT 1;
+                WITH base AS (
+                  SELECT metric_name, metric_values
+                  FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
+                  WHERE resource_id = '{rid_sql}'
+                  ORDER BY ingested_at DESC
+                  LIMIT 25
+                ),
+                cpu AS (
+                  SELECT
+                    AVG(100.0 - TRY_TO_NUMBER(v.value[1]::STRING, 38, 10)) AS avg_cpu_percent,
+                    APPROX_PERCENTILE(100.0 - TRY_TO_NUMBER(v.value[1]::STRING, 38, 10), 0.95) AS p95_cpu_percent
+                  FROM base, LATERAL FLATTEN(input => metric_values) v
+                  WHERE metric_name = 'idle'
+                ),
+                mem AS (
+                  SELECT
+                    APPROX_PERCENTILE(TRY_TO_NUMBER(v.value[1]::STRING, 38, 0), 0.95) AS p95_mem_used_bytes
+                  FROM base, LATERAL FLATTEN(input => metric_values) v
+                  WHERE metric_name IN ('used_bytes','memory_used_bytes')
+                )
+                SELECT
+                  COALESCE(cpu.avg_cpu_percent, NULL) AS avg_cpu_percent,
+                  COALESCE(cpu.p95_cpu_percent, NULL) AS p95_cpu_percent,
+                  COALESCE(mem.p95_mem_used_bytes, NULL) AS p95_mem_used_bytes
+                FROM cpu, mem;
                 """,
             )
-            metrics_payload = None
-            for row in metrics:
-                if "P" in row:
-                    metrics_payload = row["P"]
-                    break
+            metrics_summary = next(
+                (row for row in metrics_summary_rows if "AVG_CPU_PERCENT" in row),
+                None,
+            )
+
+            tf_rows = run_sql_with_context(
+                settings,
+                sql=f"""
+                SELECT droplet_size, region
+                FROM "{names.database}"."{names.schema_terraform}"."CLEAN"
+                WHERE droplet_size IS NOT NULL
+                ORDER BY ingested_at DESC
+                LIMIT 5;
+                """,
+            )
+            tf_ctx = tf_rows[0] if tf_rows else None
+
+            ctx = {
+                "metrics_summary": metrics_summary,
+                "terraform_hint": tf_ctx,
+            }
 
             explanation = await chat_complete(
                 settings,
@@ -528,14 +578,25 @@ async def cortex_summarize(
                     },
                     {
                         "role": "user",
-                        "content": prompt
-                        + "\n\nMetrics payload JSON:\n"
-                        + (metrics_payload or "no_metrics"),
+                        "content": prompt + "\n\nContext JSON:\n" + str(ctx),
                     },
                 ],
-                max_tokens=600,
+                max_tokens=350,
             )
+            return rid_sql, explanation
 
+        sem = asyncio.Semaphore(4)
+
+        async def _bounded(r: dict[str, Any]):
+            async with sem:
+                return await _generate_one(r)
+
+        results = await asyncio.gather(*[_bounded(r) for r in to_generate])
+        inserted = 0
+        for item in results:
+            if not item:
+                continue
+            rid_sql, explanation = item
             run_sql_with_context(
                 settings,
                 sql=f"""
@@ -593,63 +654,70 @@ async def cortex_chat(
             endpoint="/snowflake/v2/cortex/chat",
             params={"question": question},
         )
-        q = question
-        recs = run_sql_with_context_no_schema(
+        # Smaller context: top recent recs + summarized metrics.
+        rec_rows = run_sql_with_context_no_schema(
             settings,
             sql=f"""
-            SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT(*)))) AS RECS
-            FROM "{names.database}"."{names.schema_cost}"."COST_RECOMMENDATIONS";
+            SELECT created_at, resource_id, old_size, new_size, estimated_savings, reason
+            FROM "{names.database}"."{names.schema_cost}"."COST_RECOMMENDATIONS"
+            ORDER BY created_at DESC
+            LIMIT 10;
             """,
         )
+        rec_rows = [r for r in rec_rows if "RESOURCE_ID" in r]
 
-        metrics_rows = run_sql_with_context_no_schema(
+        metrics_summary_rows = run_sql_with_context_no_schema(
             settings,
             sql=f"""
-            WITH latest_metrics AS (
+            WITH base AS (
+              SELECT resource_id, metric_name, metric_values
+              FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
+            ),
+            cpu AS (
               SELECT
                 resource_id,
-                metric_name,
-                payload,
-                ROW_NUMBER() OVER (PARTITION BY resource_id, metric_name ORDER BY ingested_at DESC) AS rn
-              FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
+                AVG(100.0 - TRY_TO_NUMBER(v.value[1]::STRING, 38, 10)) AS avg_cpu_percent,
+                APPROX_PERCENTILE(100.0 - TRY_TO_NUMBER(v.value[1]::STRING, 38, 10), 0.95) AS p95_cpu_percent
+              FROM base, LATERAL FLATTEN(input => metric_values) v
+              WHERE metric_name = 'idle'
+              GROUP BY resource_id
+            ),
+            mem AS (
+              SELECT
+                resource_id,
+                APPROX_PERCENTILE(TRY_TO_NUMBER(v.value[1]::STRING, 38, 0), 0.95) AS p95_mem_used_bytes
+              FROM base, LATERAL FLATTEN(input => metric_values) v
+              WHERE metric_name IN ('used_bytes','memory_used_bytes')
+              GROUP BY resource_id
             )
-            SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT('resource_id', resource_id, 'metric_name', metric_name, 'payload', payload)))) AS METRICS
-            FROM latest_metrics
-            WHERE rn = 1;
+            SELECT
+              c.resource_id,
+              c.avg_cpu_percent,
+              c.p95_cpu_percent,
+              m.p95_mem_used_bytes
+            FROM cpu c
+            LEFT JOIN mem m ON m.resource_id = c.resource_id
+            LIMIT 25;
             """,
         )
+        metrics_summary_rows = [r for r in metrics_summary_rows if "RESOURCE_ID" in r]
 
-        tf_rows = run_sql_with_context_no_schema(
+        tf_hint_rows = run_sql_with_context_no_schema(
             settings,
             sql=f"""
-            WITH latest_tf AS (
-              SELECT
-                filename,
-                payload,
-                ROW_NUMBER() OVER (PARTITION BY filename ORDER BY ingested_at DESC) AS rn
-              FROM "{names.database}"."{names.schema_terraform}"."CLEAN"
-            )
-            SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(payload))) AS TF
-            FROM latest_tf
-            WHERE rn = 1;
+            SELECT filename, droplet_size, region, ingested_at
+            FROM "{names.database}"."{names.schema_terraform}"."CLEAN"
+            ORDER BY ingested_at DESC
+            LIMIT 10;
             """,
         )
+        tf_hint_rows = [r for r in tf_hint_rows if "FILENAME" in r]
 
-        recs_json = None
-        for row in recs:
-            if "RECS" in row:
-                recs_json = row["RECS"]
-                break
-        metrics_json = None
-        for row in metrics_rows:
-            if "METRICS" in row:
-                metrics_json = row["METRICS"]
-                break
-        tf_json = None
-        for row in tf_rows:
-            if "TF" in row:
-                tf_json = row["TF"]
-                break
+        ctx = {
+            "recent_recommendations": rec_rows,
+            "metrics_summary": metrics_summary_rows,
+            "terraform_latest": tf_hint_rows,
+        }
 
         answer = await chat_complete(
             settings,
@@ -661,16 +729,12 @@ async def cortex_chat(
                 {
                     "role": "user",
                     "content": "User question: "
-                    + q
-                    + "\n\nCost recommendations (JSON):\n"
-                    + (recs_json or "[]")
-                    + "\n\nLatest metrics samples (JSON):\n"
-                    + (metrics_json or "[]")
-                    + "\n\nLatest Terraform resolved resources (JSON):\n"
-                    + (tf_json or "[]"),
+                    + question
+                    + "\n\nContext JSON:\n"
+                    + str(ctx),
                 },
             ],
-            max_tokens=700,
+            max_tokens=450,
         )
 
         succeed_job(settings, job_id=job.job_id)
