@@ -12,7 +12,13 @@ import httpx
 # Attributes relevant to cost optimisation per resource type
 _COST_ATTRS: dict[str, list[str]] = {
     "digitalocean_droplet": ["size", "region", "image"],
-    "digitalocean_database_cluster": ["size", "engine", "version", "region", "node_count"],
+    "digitalocean_database_cluster": [
+        "size",
+        "engine",
+        "version",
+        "region",
+        "node_count",
+    ],
     "digitalocean_kubernetes_cluster": ["region"],
     "digitalocean_loadbalancer": ["size", "region"],
 }
@@ -74,20 +80,22 @@ def _resolve(value: Any, variables: dict[str, Any]) -> Any:
     if not isinstance(value, str):
         return value
     # Whole value is a single var reference
-    m = re.fullmatch(r'\$\{var\.(\w+)\}', value.strip())
+    m = re.fullmatch(r"\$\{var\.(\w+)\}", value.strip())
     if m:
         return variables.get(m.group(1), value)
+
     # Inline interpolation within a string
     def sub(match: re.Match) -> str:
         return str(variables.get(match.group(1), match.group(0)))
-    return re.sub(r'\$\{var\.(\w+)\}', sub, value)
+
+    return re.sub(r"\$\{var\.(\w+)\}", sub, value)
 
 
 def _extract_var_name(raw: Any) -> str | None:
     """Return the variable name if this value is purely a var reference."""
     if not isinstance(raw, str):
         return None
-    m = re.fullmatch(r'\$\{var\.(\w+)\}', raw.strip())
+    m = re.fullmatch(r"\$\{var\.(\w+)\}", raw.strip())
     return m.group(1) if m else None
 
 
@@ -154,8 +162,7 @@ def parse_terraform_dir(tf_dir: str | Path) -> dict[str, Any]:
                     resources.append(entry)
 
     safe_variables = {
-        k: v for k, v in variables.items()
-        if not _is_sensitive(k, sensitive_vars)
+        k: v for k, v in variables.items() if not _is_sensitive(k, sensitive_vars)
     }
 
     return {"variables": safe_variables, "resources": resources}
