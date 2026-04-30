@@ -477,8 +477,9 @@ async def cortex_summarize(
         )
         recs = [r for r in recs if "RESOURCE_ID" in r]
 
-        def _needs_summary(resource_id: str) -> bool:
+        def _needs_summary(resource_id: str, rec_created_at: Any) -> bool:
             rid_sql = resource_id.replace("'", "''")
+            created_at_sql = str(rec_created_at).replace("'", "''")
             exists_rows = run_sql_with_context(
                 settings,
                 sql=f"""
@@ -486,6 +487,7 @@ async def cortex_summarize(
                 FROM "{names.database}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
                 WHERE suggestion_type='recommendation_summary'
                   AND resource_id='{rid_sql}'
+                  AND explanation LIKE '%created_at={created_at_sql}%'
                 ORDER BY created_at DESC
                 LIMIT 1;
                 """,
@@ -497,7 +499,7 @@ async def cortex_summarize(
             rid_raw = str(r.get("RESOURCE_ID") or "")
             if not rid_raw:
                 continue
-            if _needs_summary(rid_raw):
+            if _needs_summary(rid_raw, r.get("CREATED_AT")):
                 to_generate.append(r)
 
         async def _generate_one(r: dict[str, Any]) -> tuple[str, str] | None:
@@ -510,9 +512,10 @@ async def cortex_summarize(
             savings = r.get("ESTIMATED_SAVINGS")
 
             # Smaller prompt: keep it tight and structured.
+            rec_created_at = r.get("CREATED_AT")
             prompt = (
                 "Explain this DigitalOcean droplet downsizing recommendation in plain English.\n"
-                f"resource_id={rid_raw}\nold_size={old_size}\nnew_size={new_size}\n"
+                f"resource_id={rid_raw}\ncreated_at={rec_created_at}\nold_size={old_size}\nnew_size={new_size}\n"
                 f"estimated_savings_monthly={savings if savings is not None else 'unknown'}\n"
                 "Include: what changes, why, and any risk/caveats. Keep under 8 bullet points."
             )

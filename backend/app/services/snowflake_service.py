@@ -92,6 +92,8 @@ def ensure_snowflake_setup(settings: Settings) -> None:
     with _connect_admin(settings) as conn:
         cur = conn.cursor()
         try:
+            # Ensure all DEFAULT CURRENT_TIMESTAMP() values land in UTC.
+            cur.execute("ALTER SESSION SET TIMEZONE = 'UTC';")
             _exec_many(
                 cur,
                 [
