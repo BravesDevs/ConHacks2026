@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.routers.frontend_api import router as frontend_router
 from app.api.routers.github import router as github_router
 from app.api.routers.health import router as health_router
 from app.api.routers.jobs import router as jobs_router
@@ -21,6 +22,7 @@ from app.api.routers.webhooks import router as webhooks_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
+api_router.include_router(frontend_router)
 api_router.include_router(webhooks_router)
 api_router.include_router(jobs_router)
 api_router.include_router(runs_router)

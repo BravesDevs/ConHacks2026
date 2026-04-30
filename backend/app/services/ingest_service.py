@@ -8,7 +8,7 @@ from app.services.snowflake_service import (
     SnowflakeNames,
     upload_json_to_stage_and_ingest,
 )
-from app.services.terraform_reader import parse_terraform_dir
+from app.services.terraform_reader import parse_terraform_dir, parse_terraform_from_github
 
 
 def ingest_metrics_json(
@@ -104,9 +104,38 @@ def ingest_terraform_from_local(
 ) -> dict[str, Any]:
     if not settings.terraform_local_path:
         raise ValueError("TERRAFORM_LOCAL_PATH is not configured")
-    payload = parse_terraform_dir(settings.terraform_local_path)
-    payload["run_id"] = run_id
-    return ingest_terraform_config_json(settings, payload=payload, filename=filename)
+    parsed = parse_terraform_dir(settings.terraform_local_path)
+    # Rename 'type' → 'resource_type' so SP_CLEAN_RAW can match on resource_type::STRING
+    resources = [
+        {("resource_type" if k == "type" else k): v for k, v in r.items()}
+        for r in parsed.get("resources", [])
+    ]
+    return ingest_terraform_resolved_resources(
+        settings,
+        resources=resources,
+        filename=filename or f"local_{run_id}.json",
+    )
+
+
+async def ingest_terraform_from_github(
+    settings: Settings,
+    *,
+    owner: str,
+    repo: str,
+    branch: str,
+    token: str,
+    run_id: str,
+) -> dict[str, Any]:
+    parsed = await parse_terraform_from_github(owner, repo, branch, token)
+    resources = [
+        {("resource_type" if k == "type" else k): v for k, v in r.items()}
+        for r in parsed.get("resources", [])
+    ]
+    return ingest_terraform_resolved_resources(
+        settings,
+        resources=resources,
+        filename=f"github_{run_id}.json",
+    )
 
 
 async def ingest_digitalocean_sizes(
