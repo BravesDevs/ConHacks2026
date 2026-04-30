@@ -124,7 +124,7 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   function handleRunPipeline() {
     setPipelineRunning(true);
     setFetchError(null);
-    runPipeline()
+    runPipeline(config)
       .then(pipelineResult => {
         if (pipelineResult.errors?.length) {
           setFetchError(`Pipeline errors: ${pipelineResult.errors.join(' | ')}`);

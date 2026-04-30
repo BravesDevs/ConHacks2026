@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ExternalLink, CheckCircle2, Loader2, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import TerraformDiff from './TerraformDiff';
 import type { ResourceRecord, ScanConfig } from '../types';
 import { approveRecommendation } from '../api';
