@@ -7,13 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
+from pydantic import BaseModel
 
 from app.core.config import get_settings
 from app.services.ingest_service import (
     ingest_digitalocean_sizes,
     ingest_metrics_json,
+    ingest_terraform_from_github,
     ingest_terraform_from_local,
 )
+from app.services.digitalocean_ai_service import chat_complete
 from app.services.snowflake_service import SnowflakeNames, run_sql_with_context_no_schema
 
 _SAMPLE_PAYLOADS_DIR = Path(__file__).parent.parent.parent.parent / "sample_payloads"
@@ -96,8 +99,7 @@ def get_recommendations() -> dict[str, Any]:
               WHERE resource_id IS NOT NULL AND resource_id <> ''
                 AND old_size IS NOT NULL AND old_size <> 'unknown'
                 AND created_at >= DATEADD('minute', -5, (SELECT max_ts FROM latest_ts))
-              ORDER BY created_at DESC
-              LIMIT 50
+              QUALIFY ROW_NUMBER() OVER (PARTITION BY resource_id ORDER BY created_at DESC) = 1
             )
             SELECT
               r.resource_id,
@@ -149,53 +151,60 @@ def get_recommendations() -> dict[str, Any]:
 
 
 @router.post("/chat")
-def chat(question: str = Body(..., embed=True)) -> dict[str, Any]:
+async def chat(question: str = Body(..., embed=True)) -> dict[str, Any]:
     settings = get_settings()
     names = SnowflakeNames.from_settings(settings)
 
+    # Fetch context from Snowflake
     try:
-        q = question.replace("'", "''")
-        rows = run_sql_with_context_no_schema(
+        recs_rows = run_sql_with_context_no_schema(
             settings,
             sql=f"""
-            WITH latest_metrics AS (
-              SELECT resource_id, metric_name, payload,
-                ROW_NUMBER() OVER (PARTITION BY resource_id, metric_name ORDER BY ingested_at DESC) AS rn
-              FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
-            ),
-            latest_tf AS (
-              SELECT filename, payload,
-                ROW_NUMBER() OVER (PARTITION BY filename ORDER BY ingested_at DESC) AS rn
-              FROM "{names.database}"."{names.schema_terraform}"."CLEAN"
-            )
-            SELECT SNOWFLAKE.CORTEX.COMPLETE(
-              'llama3.1-70b',
-              CONCAT(
-                'You are a helpful assistant for cloud cost optimization. Answer the user question using the context.\\n\\n',
-                'User question: {q}\\n\\n',
-                'Cost recommendations (JSON):\\n',
-                COALESCE((SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT(*)))) FROM "{names.database}"."{names.schema_cost}"."COST_RECOMMENDATIONS"), '[]'),
-                '\\n\\nLatest metrics:\\n',
-                COALESCE((SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT('resource_id', resource_id, 'metric_name', metric_name, 'payload', payload)))) FROM latest_metrics WHERE rn = 1), '[]'),
-                '\\n\\nTerraform resources:\\n',
-                COALESCE((SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(payload))) FROM latest_tf WHERE rn = 1), '[]')
-              )
-            )::STRING AS ANSWER;
+            SELECT resource_id, old_size, new_size, estimated_savings
+            FROM "{names.database}"."{names.schema_cost}"."COST_RECOMMENDATIONS"
+            ORDER BY created_at DESC LIMIT 20;
             """,
         )
-        answer = rows[0].get("ANSWER") if rows else "No answer available."
+        metrics_rows = run_sql_with_context_no_schema(
+            settings,
+            sql=f"""
+            SELECT resource_id, metric_name, payload
+            FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY resource_id, metric_name ORDER BY ingested_at DESC) = 1
+            LIMIT 10;
+            """,
+        )
     except Exception as e:
-        err = str(e)
-        if "trial" in err.lower() or "not available" in err.lower():
-            answer = "The AI chat feature requires a full Snowflake account (Cortex COMPLETE is not available on trial). Your cost recommendations are still visible in the dashboard."
-        else:
-            raise HTTPException(status_code=502, detail=f"cortex_chat_failed: {e}") from e
+        raise HTTPException(status_code=502, detail=f"context_fetch_failed: {e}") from e
+
+    context = (
+        f"Cost recommendations:\n{json.dumps(recs_rows, default=str)}\n\n"
+        f"Latest metrics:\n{json.dumps(metrics_rows, default=str)}"
+    )
+
+    try:
+        answer = await chat_complete(
+            settings,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant for cloud cost optimization. Answer concisely using the context provided."},
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
+            ],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"do_ai_chat_failed: {e}") from e
 
     return {"answer": answer}
 
 
+class PipelineRunRequest(BaseModel):
+    github_token: str = ""
+    repo_owner: str = ""
+    repo_name: str = ""
+    branch: str = "main"
+
+
 @router.post("/pipeline/run")
-async def run_pipeline() -> dict[str, Any]:
+async def run_pipeline(body: PipelineRunRequest = Body(default=PipelineRunRequest())) -> dict[str, Any]:
     settings = get_settings()
     names = SnowflakeNames.from_settings(settings)
     db = names.database
@@ -221,22 +230,34 @@ async def run_pipeline() -> dict[str, Any]:
     else:
         steps.append("ingest_metrics: no sample_payloads dir found")
 
-    # 3. Ingest Terraform from local path (optional)
-    if settings.terraform_local_path:
+    # 3. Ingest Terraform — GitHub repo takes priority over local path
+    if body.github_token and body.repo_owner and body.repo_name:
+        try:
+            await ingest_terraform_from_github(
+                settings,
+                owner=body.repo_owner,
+                repo=body.repo_name,
+                branch=body.branch or "main",
+                token=body.github_token,
+                run_id=run_id,
+            )
+            steps.append(f"ingest_terraform_github:{body.repo_owner}/{body.repo_name}: ok")
+        except Exception as e:
+            steps.append(f"ingest_terraform_github: failed ({e})")
+    elif settings.terraform_local_path:
         try:
             ingest_terraform_from_local(settings, run_id=run_id)
-            steps.append("ingest_terraform: ok")
+            steps.append("ingest_terraform_local: ok")
         except Exception as e:
-            steps.append(f"ingest_terraform: failed ({e})")
+            steps.append(f"ingest_terraform_local: failed ({e})")
     else:
-        steps.append("ingest_terraform: skipped (TERRAFORM_LOCAL_PATH not set)")
+        steps.append("ingest_terraform: skipped (no GitHub token or local path configured)")
 
     # 4-7. Run stored procedures in sequence
     sp_calls = [
-        ("clean_metrics",    f'CALL "{db}"."{names.schema_metrics}"."SP_CLEAN_RAW"();'),
-        ("clean_terraform",  f'CALL "{db}"."{names.schema_terraform}"."SP_CLEAN_RAW"();'),
-        ("analyze_metrics",  f'CALL "{db}"."{names.schema_cost}"."SP_ANALYZE_METRICS"();'),
-        ("cortex_summarize", f'CALL "{db}"."{names.schema_terraform}"."SP_CORTEX_SUMMARIZE_RECOMMENDATIONS"();'),
+        ("clean_metrics",   f'CALL "{db}"."{names.schema_metrics}"."SP_CLEAN_RAW"();'),
+        ("clean_terraform", f'CALL "{db}"."{names.schema_terraform}"."SP_CLEAN_RAW"();'),
+        ("analyze_metrics", f'CALL "{db}"."{names.schema_cost}"."SP_ANALYZE_METRICS"();'),
     ]
     # Recreate SP_REFRESH_SIZES with the dedup fix before analyze runs
     try:
@@ -308,6 +329,51 @@ async def run_pipeline() -> dict[str, Any]:
         except Exception as e:
             steps.append(f"{sp_name}: failed ({e})")
             errors.append(f"{sp_name}: {e}")
+
+    # 8. Summarize recommendations via DigitalOcean AI (replaces Cortex)
+    try:
+        recs = run_sql_with_context_no_schema(
+            settings,
+            sql=f"""
+            SELECT r.resource_id, r.old_size, r.new_size, r.estimated_savings,
+                   m.payload AS metrics_payload
+            FROM "{db}"."{names.schema_cost}"."COST_RECOMMENDATIONS" r
+            LEFT JOIN "{db}"."{names.schema_metrics}"."CLEAN" m ON m.resource_id = r.resource_id
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY r.resource_id ORDER BY r.created_at DESC, m.ingested_at DESC) = 1
+            LIMIT 20;
+            """,
+        )
+        for rec in recs:
+            rid = rec.get("RESOURCE_ID") or "unknown"
+            prompt = (
+                f"You are a cloud cost optimization assistant. Explain this recommendation in 2-3 plain English sentences.\n"
+                f"Resource: {rid}\n"
+                f"Current size: {rec.get('OLD_SIZE')} → Recommended: {rec.get('NEW_SIZE')}\n"
+                f"Estimated monthly savings: ${rec.get('ESTIMATED_SAVINGS') or 'unknown'}\n"
+                f"Metrics context: {json.dumps(rec.get('METRICS_PAYLOAD'), default=str)}"
+            )
+            explanation = await chat_complete(
+                settings,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+            )
+            run_sql_with_context_no_schema(
+                settings,
+                sql=f"""
+                INSERT INTO "{db}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
+                  (suggestion_type, resource_id, terraform_config, explanation)
+                VALUES (
+                  'recommendation_summary',
+                  '{rid.replace("'", "''")}',
+                  NULL,
+                  '{explanation.replace("'", "''")}'
+                );
+                """,
+            )
+        steps.append(f"do_ai_summarize: ok ({len(recs)} recommendations)")
+    except Exception as e:
+        steps.append(f"do_ai_summarize: failed ({e})")
+        errors.append(f"do_ai_summarize: {e}")
 
     return {
         "runId": run_id,

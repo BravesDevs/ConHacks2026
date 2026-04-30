@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import hcl2
+import httpx
 
 # Attributes relevant to cost optimisation per resource type
 _COST_ATTRS: dict[str, list[str]] = {
@@ -156,3 +159,52 @@ def parse_terraform_dir(tf_dir: str | Path) -> dict[str, Any]:
     }
 
     return {"variables": safe_variables, "resources": resources}
+
+
+async def parse_terraform_from_github(
+    owner: str, repo: str, branch: str, token: str
+) -> dict[str, Any]:
+    """Fetch .tf / .tfvars files from a GitHub repo and parse them."""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Get recursive tree to find all .tf / .tfvars files
+        tree_res = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}",
+            headers=headers,
+            params={"recursive": "1"},
+        )
+        tree_res.raise_for_status()
+        entries = tree_res.json().get("tree", [])
+
+        tf_paths = [
+            e["path"] for e in entries
+            if e.get("type") == "blob"
+            and (e["path"].endswith(".tf") or e["path"].endswith(".tfvars"))
+        ]
+
+        # Fetch each file's content
+        file_contents: dict[str, str] = {}
+        for path in tf_paths:
+            res = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                headers=headers,
+                params={"ref": branch},
+            )
+            if res.status_code != 200:
+                continue
+            payload = res.json()
+            if payload.get("encoding") == "base64" and payload.get("content"):
+                raw = base64.b64decode(payload["content"])
+                file_contents[path] = raw.decode("utf-8", errors="replace")
+
+    # Write to a temp dir and parse
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for path, content in file_contents.items():
+            dest = tmp_path / Path(path).name
+            dest.write_text(content, encoding="utf-8")
+        return parse_terraform_dir(tmp_path)
