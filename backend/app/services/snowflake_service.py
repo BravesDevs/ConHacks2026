@@ -295,7 +295,7 @@ def run_sql(settings: Settings, *, sql: str) -> list[dict[str, Any]]:
                     rows = cur.fetchall() if cur.description else []
                 except Exception:
                     cols, rows = [], []
-                if cols and rows:
+                if cols and rows and not (len(cols) == 1 and cols[0].lower() == "status"):
                     for r in rows:
                         results.append({cols[i]: r[i] for i in range(len(cols))})
             return results

@@ -111,6 +111,36 @@ export default function DashboardScreen({ config, onRescan }: DashboardScreenPro
   const [pipelineRunning, setPipelineRunning] = useState(false);
 
   useEffect(() => {
+    const handler = async (e: KeyboardEvent) => {
+      const isCallShortcut =
+        (e.metaKey || e.ctrlKey) && e.shiftKey && e.key === '0';
+      if (!isCallShortcut) return;
+      e.preventDefault();
+      const phone = (config.phoneNumber ?? '').trim();
+      if (!phone) {
+        toast.error('No phone number on file. Add one in Connect.');
+        return;
+      }
+      const t = toast.loading(`Calling ${phone}...`);
+      try {
+        const summary = await fetchSavingsSummary();
+        const res = await triggerSavingsCall({
+          phoneNumber: phone,
+          summary,
+          githubToken: config.githubToken,
+          repoUrl: config.repoUrl,
+          branch: config.branch,
+        });
+        toast.success(`Call placed (sid ${res.call_sid.slice(0, 8)}...)`, { id: t });
+      } catch (err) {
+        toast.error(`Call failed: ${(err as Error).message}`, { id: t });
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [config.phoneNumber]);
+
+  useEffect(() => {
     fetchAnalysis(config)
       .then(result => {
         setAnalysisResult(result);

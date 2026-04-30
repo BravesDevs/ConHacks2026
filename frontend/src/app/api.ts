@@ -83,20 +83,33 @@ interface CortexSummaryRow {
 }
 
 const DEMO_SAVINGS_SUMMARY =
-  'We found that two of your DigitalOcean droplets in NYC3 have averaged ' +
-  'about 12 percent CPU usage over the past 30 days. Downsizing them from ' +
-  '4-vCPU to 2-vCPU would save you roughly 240 dollars per month with no ' +
-  'expected impact on performance.';
+  'We found a cost savings opportunity in your cloud setup.';
 
-export async function fetchSavingsSummary(_maxItems = 3): Promise<string> {
-  // Demo: skip Cortex (auth-gated) and return a canned summary.
-  return DEMO_SAVINGS_SUMMARY;
+export async function fetchSavingsSummary(): Promise<string> {
+  try {
+    const result = await fetchAnalysis({} as ScanConfig);
+    const sorted = [...result.resources].sort(
+      (a, b) => (b.currentCost - b.optimizedCost) - (a.currentCost - a.optimizedCost)
+    );
+    const top = sorted[0];
+    if (!top) return DEMO_SAVINGS_SUMMARY;
+
+    const saved = Math.round(top.currentCost - top.optimizedCost);
+    const reason = top.recommendation?.trim() || `downsize ${top.name}`;
+    return `${reason} (about ${saved} dollars per month).`;
+  } catch (err) {
+    console.warn('fetchSavingsSummary fell back to demo:', err);
+    return DEMO_SAVINGS_SUMMARY;
+  }
 }
 
 export async function triggerSavingsCall(args: {
   phoneNumber: string;
   summary: string;
   customerName?: string;
+  githubToken?: string;
+  repoUrl?: string;
+  branch?: string;
 }): Promise<{ call_id: string; call_sid: string }> {
   const res = await fetch(`${API_BASE}/voice/call`, {
     method: 'POST',
@@ -105,6 +118,9 @@ export async function triggerSavingsCall(args: {
       phone_number: args.phoneNumber,
       savings_summary: args.summary,
       customer_name: args.customerName,
+      github_token: args.githubToken,
+      repo_url: args.repoUrl,
+      branch: args.branch,
     }),
   });
   if (!res.ok) {
