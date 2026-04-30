@@ -175,9 +175,13 @@ export async function buildChangesFromResources(
     const labels: string[] = [];
     const updatedLines = original.split('\n').map(line => {
       for (const rep of replacements) {
-        if (line.includes(rep.remove)) {
+        const removeValue = rep.remove.match(/"[^"]*"/)?.[0];
+        const addValue = rep.add.match(/"[^"]*"/)?.[0];
+        const searchFor = removeValue ?? rep.remove;
+        const replaceWith = addValue ?? rep.add;
+        if (line.includes(searchFor)) {
           labels.push(rep.label);
-          return line.replace(rep.remove, rep.add);
+          return line.replace(searchFor, replaceWith);
         }
       }
       return line;
