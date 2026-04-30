@@ -414,98 +414,50 @@ async def create_pull_request(
     if not access_token:
         raise HTTPException(status_code=401, detail="missing_access_token")
 
-    branch_name = f"infrabott/{uuid.uuid4().hex[:8]}"
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {access_token}",
     }
-    owner, repo = body.repo_owner, body.repo_name
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        ref_res = await client.get(
-            GITHUB_REF_URL.format(owner=owner, repo=repo, branch=body.base_branch),
-            headers=headers,
-        )
-        if ref_res.status_code == 404:
-            raise HTTPException(status_code=404, detail="base_branch_not_found")
-        if ref_res.status_code == 401:
-            raise HTTPException(status_code=401, detail="github_unauthorized")
-        if ref_res.status_code == 403:
-            raise HTTPException(status_code=403, detail="github_forbidden")
-        if ref_res.status_code != 200:
-            raise HTTPException(status_code=502, detail="github_base_ref_fetch_failed")
-        base_sha = (ref_res.json().get("object") or {}).get("sha")
-        if not base_sha:
-            raise HTTPException(status_code=502, detail="github_base_sha_missing")
-
-        create_ref_res = await client.post(
-            GITHUB_REFS_URL.format(owner=owner, repo=repo),
-            headers=headers,
-            json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
-        )
-        # GitHub returns 422 with "Reference already exists" for collisions; surface as 409.
-        if create_ref_res.status_code == 409 or (
-            create_ref_res.status_code == 422
-            and "already exists" in create_ref_res.text.lower()
-        ):
-            raise HTTPException(status_code=409, detail="branch_already_exists")
-        if create_ref_res.status_code != 201:
-            raise HTTPException(status_code=502, detail="github_branch_create_failed")
-
-        current_sha: str | None = None
-        existing_res = await client.get(
-            GITHUB_CONTENTS_URL.format(owner=owner, repo=repo, path=body.file_path),
-            headers=headers,
-            params={"ref": branch_name},
-        )
-        if existing_res.status_code == 200:
-            payload = existing_res.json()
-            if isinstance(payload, dict):
-                current_sha = payload.get("sha")
-        elif existing_res.status_code not in (404,):
-            raise HTTPException(status_code=502, detail="github_contents_fetch_failed")
-
-        encoded = base64.b64encode(body.content.encode("utf-8")).decode("ascii")
-        commit_payload: dict = {
-            "message": f"infrabott: update {body.file_path}",
-            "content": encoded,
-            "branch": branch_name,
-        }
-        if current_sha:
-            commit_payload["sha"] = current_sha
-
-        commit_res = await client.put(
-            GITHUB_CONTENTS_URL.format(owner=owner, repo=repo, path=body.file_path),
-            headers=headers,
-            json=commit_payload,
-        )
-        if commit_res.status_code == 422:
-            raise HTTPException(status_code=422, detail="content_unchanged_or_invalid")
-        if commit_res.status_code == 409:
-            raise HTTPException(status_code=409, detail="file_sha_conflict")
-        if commit_res.status_code not in (200, 201):
-            raise HTTPException(status_code=502, detail="github_commit_failed")
-
         pr_res = await client.post(
-            GITHUB_PULLS_URL.format(owner=owner, repo=repo),
+            GITHUB_PULLS_URL.format(owner=body.owner, repo=body.repo),
             headers=headers,
             json={
-                "title": f"InfraBott: update {body.file_path}",
-                "head": branch_name,
-                "base": body.base_branch,
+                "title": f"InfraBott: {body.head} → {body.base}",
+                "head": body.head,
+                "base": body.base,
                 "body": "Automated change proposed by InfraBott.",
             },
         )
-        if pr_res.status_code == 422:
-            raise HTTPException(status_code=422, detail="pr_validation_failed")
-        if pr_res.status_code != 201:
-            raise HTTPException(status_code=502, detail="github_pr_create_failed")
-        pr_data = pr_res.json()
+
+    if pr_res.status_code == 401:
+        raise HTTPException(status_code=401, detail="github_unauthorized")
+    if pr_res.status_code == 403:
+        raise HTTPException(status_code=403, detail="github_forbidden")
+    if pr_res.status_code == 404:
+        raise HTTPException(status_code=404, detail="repo_not_found")
+    if pr_res.status_code == 422:
+        text = pr_res.text.lower()
+        if "pull request already exists" in text or "a pull request already" in text:
+            raise HTTPException(status_code=409, detail="pull_request_already_exists")
+        if (
+            "does not exist" in text
+            or "no commits between" in text
+            or "invalid" in text
+            and ("head" in text or "base" in text)
+        ):
+            raise HTTPException(status_code=404, detail="branch_not_found_or_no_diff")
+        raise HTTPException(status_code=422, detail="pr_validation_failed")
+    if pr_res.status_code != 201:
+        raise HTTPException(status_code=502, detail="github_pr_create_failed")
+    pr_data = pr_res.json()
 
     return CreatePROut(
         pr_id=pr_data["number"],
         pr_url=pr_data["html_url"],
-        branch_name=branch_name,
+        head=body.head,
+        base=body.base,
     )
 
 
