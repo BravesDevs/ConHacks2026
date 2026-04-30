@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     snowflake_integration_user_password: str = ""
 
     digitalocean_token: str = ""
+    digitalocean_openapi_key: str = ""
 
 
 @lru_cache

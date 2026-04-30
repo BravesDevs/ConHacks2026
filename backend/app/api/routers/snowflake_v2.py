@@ -19,6 +19,7 @@ from app.schemas.snowflake_v2 import (
     SnowflakeWorkflowsSetupResponse,
 )
 from app.services.digitalocean_monitoring_service import fetch_digitalocean_metrics
+from app.services.digitalocean_ai_service import chat_complete
 from app.services.ingest_service import (
     ingest_digitalocean_sizes,
     ingest_metrics_json,
@@ -455,7 +456,7 @@ cortex_router = APIRouter(prefix="/snowflake/v2/cortex", tags=["snowflake-cortex
 
 
 @cortex_router.post("/summarize")
-def cortex_summarize(
+async def cortex_summarize(
     settings=Depends(require_internal_job_token),
 ) -> SnowflakeCortexSummarizeResponse:
     """Generate explanation summaries for COST_RECOMMENDATIONS and store them in TERRAFORM_CONFIG.TERRAFORM_SUGGESTIONS."""
@@ -475,24 +476,25 @@ def cortex_summarize(
         recs = [r for r in recs if "RESOURCE_ID" in r]
         inserted = 0
         for r in recs:
-            rid = (r.get("RESOURCE_ID") or "").replace("'", "''")
-            old_size = (r.get("OLD_SIZE") or "unknown").replace("'", "''")
-            new_size = (r.get("NEW_SIZE") or "unknown").replace("'", "''")
+            rid_raw = r.get("RESOURCE_ID") or ""
+            rid_sql = str(rid_raw).replace("'", "''")
+            old_size = str(r.get("OLD_SIZE") or "unknown")
+            new_size = str(r.get("NEW_SIZE") or "unknown")
             savings = r.get("ESTIMATED_SAVINGS")
             prompt = (
                 "You are a cloud cost optimization assistant. Explain the recommendation in plain English.\\n"
-                f"Resource ID: {rid}\\n"
+                f"Resource ID: {rid_raw}\\n"
                 f"Old size: {old_size} New size: {new_size}\\n"
                 f"Estimated savings (monthly): {savings if savings is not None else 'unknown'}\\n\\n"
                 "Use the provided metrics payload JSON context when relevant."
-            ).replace("'", "''")
+            )
             exists = run_sql_with_context(
                 settings,
                 sql=f"""
                 SELECT 1 AS X
                 FROM "{names.database}"."{names.schema_terraform}"."TERRAFORM_SUGGESTIONS"
                 WHERE suggestion_type='recommendation_summary'
-                  AND resource_id='{rid}'
+                  AND resource_id='{rid_sql}'
                 ORDER BY created_at DESC
                 LIMIT 1;
                 """,
@@ -500,6 +502,39 @@ def cortex_summarize(
             exists = any("X" in row for row in exists)
             if exists:
                 continue
+
+            metrics = run_sql_with_context(
+                settings,
+                sql=f"""
+                SELECT TO_VARCHAR(payload) AS P
+                FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
+                WHERE resource_id = '{rid_sql}'
+                ORDER BY ingested_at DESC
+                LIMIT 1;
+                """,
+            )
+            metrics_payload = None
+            for row in metrics:
+                if "P" in row:
+                    metrics_payload = row["P"]
+                    break
+
+            explanation = await chat_complete(
+                settings,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a cloud cost optimization assistant.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                        + "\n\nMetrics payload JSON:\n"
+                        + (metrics_payload or "no_metrics"),
+                    },
+                ],
+                max_tokens=600,
+            )
 
             run_sql_with_context(
                 settings,
@@ -509,22 +544,9 @@ def cortex_summarize(
                 )
                 SELECT
                   'recommendation_summary',
-                  '{rid}',
+                  '{rid_sql}',
                   NULL,
-                  SNOWFLAKE.CORTEX.COMPLETE(
-                    'llama3.1-70b',
-                    CONCAT(
-                      '{prompt}',
-                      '\\n\\nMetrics payload JSON:\\n',
-                      COALESCE((
-                        SELECT TO_VARCHAR(payload)
-                        FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
-                        WHERE resource_id = '{rid}'
-                        ORDER BY ingested_at DESC
-                        LIMIT 1
-                      ), 'no_metrics')
-                    )
-                  )::STRING;
+                  '{explanation.replace("'", "''")}';
                 """,
             )
             inserted += 1
@@ -557,7 +579,7 @@ def cortex_summarize(
 
 
 @cortex_router.post("/chat")
-def cortex_chat(
+async def cortex_chat(
     question: str = Body(
         ..., embed=True, description="User question about recommendations/metrics."
     ),
@@ -571,9 +593,16 @@ def cortex_chat(
             endpoint="/snowflake/v2/cortex/chat",
             params={"question": question},
         )
-        q = question.replace("'", "''")
-        # Avoid QUALIFY in Cortex query to reduce risk of "secure object" errors in some accounts.
-        out = run_sql_with_context_no_schema(
+        q = question
+        recs = run_sql_with_context_no_schema(
+            settings,
+            sql=f"""
+            SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT(*)))) AS RECS
+            FROM "{names.database}"."{names.schema_cost}"."COST_RECOMMENDATIONS";
+            """,
+        )
+
+        metrics_rows = run_sql_with_context_no_schema(
             settings,
             sql=f"""
             WITH latest_metrics AS (
@@ -583,35 +612,69 @@ def cortex_chat(
                 payload,
                 ROW_NUMBER() OVER (PARTITION BY resource_id, metric_name ORDER BY ingested_at DESC) AS rn
               FROM "{names.database}"."{names.schema_metrics}"."CLEAN"
-            ),
-            latest_tf AS (
+            )
+            SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT('resource_id', resource_id, 'metric_name', metric_name, 'payload', payload)))) AS METRICS
+            FROM latest_metrics
+            WHERE rn = 1;
+            """,
+        )
+
+        tf_rows = run_sql_with_context_no_schema(
+            settings,
+            sql=f"""
+            WITH latest_tf AS (
               SELECT
                 filename,
                 payload,
                 ROW_NUMBER() OVER (PARTITION BY filename ORDER BY ingested_at DESC) AS rn
               FROM "{names.database}"."{names.schema_terraform}"."CLEAN"
             )
-            SELECT SNOWFLAKE.CORTEX.COMPLETE(
-              'llama3.1-70b',
-              CONCAT(
-                'You are a helpful assistant for cloud cost optimization. Answer the user question using the context.\\n\\n',
-                'User question: {q}\\n\\n',
-                'Cost recommendations (JSON):\\n',
-                COALESCE((SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT(*))))
-                          FROM "{names.database}"."{names.schema_cost}"."COST_RECOMMENDATIONS"), '[]'),
-                '\\n\\nLatest metrics samples (JSON):\\n',
-                COALESCE((SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(OBJECT_CONSTRUCT('resource_id', resource_id, 'metric_name', metric_name, 'payload', payload))))
-                          FROM latest_metrics WHERE rn = 1), '[]'),
-                '\\n\\nLatest Terraform resolved resources (JSON):\\n',
-                COALESCE((SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(payload)))
-                          FROM latest_tf WHERE rn = 1), '[]')
-              )
-            )::STRING AS ANSWER;
+            SELECT TO_VARCHAR(TO_VARIANT(ARRAY_AGG(payload))) AS TF
+            FROM latest_tf
+            WHERE rn = 1;
             """,
         )
-        rows = [r for r in out if "ANSWER" in r]
+
+        recs_json = None
+        for row in recs:
+            if "RECS" in row:
+                recs_json = row["RECS"]
+                break
+        metrics_json = None
+        for row in metrics_rows:
+            if "METRICS" in row:
+                metrics_json = row["METRICS"]
+                break
+        tf_json = None
+        for row in tf_rows:
+            if "TF" in row:
+                tf_json = row["TF"]
+                break
+
+        answer = await chat_complete(
+            settings,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant for cloud cost optimization. Answer the user question using the context.",
+                },
+                {
+                    "role": "user",
+                    "content": "User question: "
+                    + q
+                    + "\n\nCost recommendations (JSON):\n"
+                    + (recs_json or "[]")
+                    + "\n\nLatest metrics samples (JSON):\n"
+                    + (metrics_json or "[]")
+                    + "\n\nLatest Terraform resolved resources (JSON):\n"
+                    + (tf_json or "[]"),
+                },
+            ],
+            max_tokens=700,
+        )
+
         succeed_job(settings, job_id=job.job_id)
-        return {"job_id": job.job_id, "answer": rows[0]["ANSWER"] if rows else None}
+        return {"job_id": job.job_id, "answer": answer}
     except Exception as e:
         try:
             fail_job(settings, job_id=locals().get("job").job_id, error=str(e))  # type: ignore[attr-defined]
